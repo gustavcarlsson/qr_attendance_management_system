@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "QR Attendance Management System"
+description = "A secure attendance platform for universities where lecturers create time-limited QR sessions, students check in from their phones, and administrators monitor attendance with real-time reports and analytics."
+version = "1.0.0"
+id = "artifacts/qr-attendance"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20169
+
+[services.development]
+run = "pnpm --filter @workspace/qr-attendance run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/qr-attendance", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/qr-attendance/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20169"
+BASE_PATH = "/"

@@ -3,13 +3,25 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: QR Attendance Management System API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: users
+    description: Current user context
+  - name: dashboard
+    description: Attendance overview metrics
+  - name: courses
+    description: Course and attendance session management
+  - name: sessions
+    description: Time-bound attendance sessions
+  - name: attendance
+    description: Attendance capture and history
+  - name: reports
+    description: Attendance reporting
 paths:
   /healthz:
     get:
@@ -24,7 +36,244 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /me:
+    get:
+      operationId: getCurrentUser
+      tags: [users]
+      summary: Get the current demo user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get dashboard overview metrics
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+  /courses:
+    get:
+      operationId: listCourses
+      tags: [courses]
+      summary: List courses
+      parameters:
+        - $ref: "#/components/parameters/RoleParam"
+      responses:
+        "200":
+          description: Course list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Course"
+    post:
+      operationId: createCourse
+      tags: [courses]
+      summary: Create a course
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CourseInput"
+      responses:
+        "201":
+          description: Created course
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Course"
+  /courses/{courseId}:
+    get:
+      operationId: getCourse
+      tags: [courses]
+      summary: Get a course
+      parameters:
+        - $ref: "#/components/parameters/CourseIdParam"
+      responses:
+        "200":
+          description: Course
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Course"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /courses/{courseId}/sessions:
+    post:
+      operationId: createSession
+      tags: [sessions]
+      summary: Start a time-bound attendance session
+      parameters:
+        - $ref: "#/components/parameters/CourseIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionInput"
+      responses:
+        "201":
+          description: Created session with QR token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceSession"
+  /sessions/{sessionId}:
+    get:
+      operationId: getSession
+      tags: [sessions]
+      summary: Get a session
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "200":
+          description: Attendance session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceSession"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /sessions/{sessionId}/end:
+    post:
+      operationId: endSession
+      tags: [sessions]
+      summary: End an attendance session
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "200":
+          description: Ended session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceSession"
+  /sessions/{sessionId}/attendance:
+    get:
+      operationId: listSessionAttendance
+      tags: [attendance]
+      summary: List attendance captured in a session
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      responses:
+        "200":
+          description: Attendance records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceRecord"
+  /sessions/{sessionId}/scan:
+    post:
+      operationId: scanAttendance
+      tags: [attendance]
+      summary: Validate a student QR scan
+      parameters:
+        - $ref: "#/components/parameters/SessionIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanInput"
+      responses:
+        "201":
+          description: Recorded attendance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceRecord"
+        "400":
+          description: Invalid or duplicate scan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /reports/attendance:
+    get:
+      operationId: getAttendanceReport
+      tags: [reports]
+      summary: Get course attendance summaries
+      parameters:
+        - name: courseId
+          in: query
+          schema:
+            type: ["string", "null"]
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: [week, month, semester]
+            default: month
+      responses:
+        "200":
+          description: Attendance report
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReportSummary"
+  /students/{studentId}/attendance:
+    get:
+      operationId: getStudentAttendance
+      tags: [attendance]
+      summary: Get a student's attendance history
+      parameters:
+        - name: studentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Student attendance history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceRecord"
 components:
+  parameters:
+    RoleParam:
+      name: role
+      in: query
+      schema:
+        type: string
+        enum: [admin, lecturer, student]
+        default: lecturer
+    CourseIdParam:
+      name: courseId
+      in: path
+      required: true
+      schema:
+        type: string
+    SessionIdParam:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +282,164 @@ components:
           type: string
       required:
         - status
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        role:
+          type: string
+          enum: [admin, lecturer, student]
+        initials: { type: string }
+        matricNumber: { type: ["string", "null"] }
+        department: { type: string }
+      required: [id, name, email, role, initials, matricNumber, department]
+    Course:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        title: { type: string }
+        department: { type: string }
+        lecturerId: { type: string }
+        lecturerName: { type: string }
+        color: { type: string }
+        studentsEnrolled: { type: integer }
+        attendanceRate: { type: number }
+        nextClass: { type: ["string", "null"] }
+        activeSessionId: { type: ["string", "null"] }
+      required:
+        - id
+        - code
+        - title
+        - department
+        - lecturerId
+        - lecturerName
+        - color
+        - studentsEnrolled
+        - attendanceRate
+        - nextClass
+        - activeSessionId
+    CourseInput:
+      type: object
+      properties:
+        code: { type: string, minLength: 2 }
+        title: { type: string, minLength: 2 }
+        department: { type: string, minLength: 2 }
+        color: { type: string }
+      required: [code, title, department]
+    SessionInput:
+      type: object
+      properties:
+        room: { type: string }
+        durationMinutes: { type: integer, minimum: 5, maximum: 180, default: 30 }
+      required: [room]
+    AttendanceSession:
+      type: object
+      properties:
+        id: { type: string }
+        courseId: { type: string }
+        courseCode: { type: string }
+        courseTitle: { type: string }
+        room: { type: string }
+        status:
+          type: string
+          enum: [active, ended, expired]
+        token: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        scanCount: { type: integer }
+        totalStudents: { type: integer }
+        attendanceRate: { type: number }
+      required:
+        - id
+        - courseId
+        - courseCode
+        - courseTitle
+        - room
+        - status
+        - token
+        - startsAt
+        - endsAt
+        - scanCount
+        - totalStudents
+        - attendanceRate
+    ScanInput:
+      type: object
+      properties:
+        studentId: { type: string }
+        qrToken: { type: string }
+      required: [studentId, qrToken]
+    AttendanceRecord:
+      type: object
+      properties:
+        id: { type: string }
+        studentId: { type: string }
+        studentName: { type: string }
+        matricNumber: { type: string }
+        courseId: { type: string }
+        courseCode: { type: string }
+        sessionId: { type: string }
+        scannedAt: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [present, late, rejected]
+      required:
+        - id
+        - studentId
+        - studentName
+        - matricNumber
+        - courseId
+        - courseCode
+        - sessionId
+        - scannedAt
+        - status
+    ReportSummary:
+      type: object
+      properties:
+        courseId: { type: string }
+        courseCode: { type: string }
+        courseTitle: { type: string }
+        present: { type: integer }
+        absent: { type: integer }
+        totalSessions: { type: integer }
+        attendanceRate: { type: number }
+      required: [courseId, courseCode, courseTitle, present, absent, totalSessions, attendanceRate]
+    TrendPoint:
+      type: object
+      properties:
+        label: { type: string }
+        value: { type: number }
+      required: [label, value]
+    ActivityItem:
+      type: object
+      properties:
+        id: { type: string }
+        text: { type: string }
+        timestamp: { type: string, format: date-time }
+        type:
+          type: string
+          enum: [scan, session, report]
+      required: [id, text, timestamp, type]
+    DashboardSummary:
+      type: object
+      properties:
+        totalStudents: { type: integer }
+        activeCourses: { type: integer }
+        presentToday: { type: integer }
+        attendanceRate: { type: number }
+        trend:
+          type: array
+          items: { $ref: "#/components/schemas/TrendPoint" }
+        recentActivity:
+          type: array
+          items: { $ref: "#/components/schemas/ActivityItem" }
+      required: [totalStudents, activeCourses, presentToday, attendanceRate, trend, recentActivity]
 

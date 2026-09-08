@@ -1,6 +1,6 @@
-# [Project name]
+# QR Attendance Management System
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+An attendance command center for universities where lecturers create expiring QR sessions, validate student presence, and review live attendance reports.
 
 ## Run & Operate
 
@@ -22,23 +22,34 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/qr-attendance` — responsive React/Vite application and primary user experience.
+- `artifacts/api-server/src/routes/attendance.ts` — attendance API, demo seed data, session/token validation, and report aggregation.
+- `lib/api-spec/openapi.yaml` — source of truth for the generated API hooks and validation schemas.
+- `lib/db/src/schema/attendance.ts` — PostgreSQL/Drizzle schema for users, courses, sessions, and attendance records.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Attendance is bound to an active, time-limited session token rather than relying on a static student QR alone.
+- Duplicate scans are prevented by both an application check and a database unique index on session/student.
+- The first build uses seeded demo users and courses so the product can be evaluated immediately; authentication is intentionally kept behind the future managed sign-in boundary.
+- The frontend consumes generated OpenAPI React Query hooks rather than hand-written fetch calls.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Lecturer overview dashboard with attendance rate, activity, and course summaries.
+- Live session creation, QR token display, scan validation, and end-session controls.
+- Course management, attendance reports with filtering/export affordance, and student attendance history.
+- Student view with identity QR presentation and personal attendance records.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+No additional preferences recorded.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- After changing `lib/api-spec/openapi.yaml`, run `pnpm --filter @workspace/api-spec run codegen`.
+- Start or restart the managed API and web workflows rather than running root-level dev commands.
+- The demo API seeds its initial records on the first request after the schema is pushed.
 
 ## Pointers
 
