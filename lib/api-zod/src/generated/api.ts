@@ -241,7 +241,6 @@ export const CreateSessionResponse = zod.object({
   "courseTitle": zod.string(),
   "room": zod.string(),
   "status": zod.enum(['active', 'ended', 'expired']),
-  "token": zod.string(),
   "startsAt": zod.coerce.date(),
   "endsAt": zod.coerce.date(),
   "scanCount": zod.number().int(),
@@ -264,12 +263,24 @@ export const GetSessionResponse = zod.object({
   "courseTitle": zod.string(),
   "room": zod.string(),
   "status": zod.enum(['active', 'ended', 'expired']),
-  "token": zod.string(),
   "startsAt": zod.coerce.date(),
   "endsAt": zod.coerce.date(),
   "scanCount": zod.number().int(),
   "totalStudents": zod.number().int(),
   "attendanceRate": zod.number()
+})
+
+
+/**
+ * @summary Issue a short-lived student-specific QR token
+ */
+export const IssueStudentQrParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const IssueStudentQrResponse = zod.object({
+  "qrToken": zod.string(),
+  "expiresAt": zod.coerce.date()
 })
 
 
@@ -287,7 +298,6 @@ export const EndSessionResponse = zod.object({
   "courseTitle": zod.string(),
   "room": zod.string(),
   "status": zod.enum(['active', 'ended', 'expired']),
-  "token": zod.string(),
   "startsAt": zod.coerce.date(),
   "endsAt": zod.coerce.date(),
   "scanCount": zod.number().int(),
@@ -318,14 +328,13 @@ export const ListSessionAttendanceResponse = zod.array(ListSessionAttendanceResp
 
 
 /**
- * @summary Validate a student QR scan
+ * @summary Validate a lecturer-scanned student QR code
  */
 export const ScanAttendanceParams = zod.object({
   "sessionId": zod.coerce.string()
 })
 
 export const ScanAttendanceBody = zod.object({
-  "studentId": zod.string(),
   "qrToken": zod.string()
 })
 

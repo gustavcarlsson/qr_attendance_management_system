@@ -107,7 +107,6 @@ export interface AttendanceSession {
   courseTitle: string;
   room: string;
   status: AttendanceSessionStatus;
-  token: string;
   startsAt: string;
   endsAt: string;
   scanCount: number;
@@ -116,8 +115,12 @@ export interface AttendanceSession {
 }
 
 export interface ScanInput {
-  studentId: string;
   qrToken: string;
+}
+
+export interface StudentQrToken {
+  qrToken: string;
+  expiresAt: string;
 }
 
 export type AttendanceRecordStatus = typeof AttendanceRecordStatus[keyof typeof AttendanceRecordStatus];

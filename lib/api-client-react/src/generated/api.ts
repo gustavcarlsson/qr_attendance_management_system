@@ -34,6 +34,7 @@ import type {
   ReportSummary,
   ScanInput,
   SessionInput,
+  StudentQrToken,
   User,
   UserRoleInput
 } from './api.schemas';
@@ -970,6 +971,77 @@ export function useGetSession<TData = Awaited<ReturnType<typeof getSession>>, TE
 
 
 
+export const getIssueStudentQrUrl = (sessionId: string,) => {
+
+
+
+
+  return `/api/sessions/${sessionId}/student-qr`
+}
+
+/**
+ * @summary Issue a short-lived student-specific QR token
+ */
+export const issueStudentQr = async (sessionId: string, options?: Parameters<typeof customFetch>[1]): Promise<StudentQrToken> => {
+
+  return customFetch<StudentQrToken>(getIssueStudentQrUrl(sessionId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getIssueStudentQrMutationOptions = <TError = ErrorType<ErrorResponse | NotFoundResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof issueStudentQr>>, TError,{sessionId: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof issueStudentQr>>, TError,{sessionId: string}, TContext> => {
+
+const mutationKey = ['issueStudentQr'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof issueStudentQr>>, {sessionId: string}> = (props) => {
+          const {sessionId} = props ?? {};
+
+          return  issueStudentQr(sessionId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type IssueStudentQrMutationResult = NonNullable<Awaited<ReturnType<typeof issueStudentQr>>>
+
+    export type IssueStudentQrMutationError = ErrorType<ErrorResponse | NotFoundResponse>
+
+    /**
+ * @summary Issue a short-lived student-specific QR token
+ */
+export const useIssueStudentQr = <TError = ErrorType<ErrorResponse | NotFoundResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof issueStudentQr>>, TError,{sessionId: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof issueStudentQr>>,
+        TError,
+        {sessionId: string},
+        TContext
+      > => {
+      return useMutation(getIssueStudentQrMutationOptions(options));
+    }
+
 export const getEndSessionUrl = (sessionId: string,) => {
 
 
@@ -1127,7 +1199,7 @@ export const getScanAttendanceUrl = (sessionId: string,) => {
 }
 
 /**
- * @summary Validate a student QR scan
+ * @summary Validate a lecturer-scanned student QR code
  */
 export const scanAttendance = async (sessionId: string,
     scanInput: ScanInput, options?: Parameters<typeof customFetch>[1]): Promise<AttendanceRecord> => {
@@ -1177,7 +1249,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type ScanAttendanceMutationError = ErrorType<ErrorResponse>
 
     /**
- * @summary Validate a student QR scan
+ * @summary Validate a lecturer-scanned student QR code
  */
 export const useScanAttendance = <TError = ErrorType<ErrorResponse>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof scanAttendance>>, TError,{sessionId: string;data: BodyType<ScanInput>}, TContext>, request?: SecondParameter<typeof customFetch>}

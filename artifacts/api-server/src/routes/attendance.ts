@@ -1,4 +1,10 @@
-import { randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import { and, count, desc, eq, gt, gte, inArray } from "drizzle-orm";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { clerkClient, getAuth } from "@clerk/express";
@@ -11,6 +17,8 @@ import {
   GetCourseParams,
   GetSessionParams,
   GetStudentAttendanceParams,
+  IssueStudentQrParams,
+  IssueStudentQrResponse,
   ListCoursesQueryParams,
   ListSessionAttendanceParams,
   ScanAttendanceBody,
@@ -119,6 +127,96 @@ function currentSessionStatus(session: typeof sessionsTable.$inferSelect) {
   if (session.status === "ended") return "ended";
   if (session.endsAt.getTime() <= Date.now()) return "expired";
   return "active";
+}
+
+const studentQrLifetimeMs = 30_000;
+const studentQrPrefix = "aq1";
+
+type StudentQrClaims = {
+  sessionId: string;
+  studentId: string;
+  expiresAt: number;
+};
+
+function studentQrEncryptionKey() {
+  const sessionSecret = process.env.SESSION_SECRET;
+  if (!sessionSecret) {
+    throw new Error("SESSION_SECRET is required to issue student QR codes");
+  }
+
+  return createHash("sha256")
+    .update("attendly-student-qr-v1\0")
+    .update(sessionSecret)
+    .digest();
+}
+
+function createStudentQrToken(sessionId: string, studentId: string) {
+  const expiresAt = Date.now() + studentQrLifetimeMs;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", studentQrEncryptionKey(), iv);
+  const plaintext = JSON.stringify({ sessionId, studentId, expiresAt });
+  const ciphertext = Buffer.concat([
+    cipher.update(plaintext, "utf8"),
+    cipher.final(),
+  ]);
+  const qrToken = [
+    studentQrPrefix,
+    iv.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+    ciphertext.toString("base64url"),
+  ].join(".");
+
+  return { qrToken, expiresAt: new Date(expiresAt).toISOString() };
+}
+
+function decodeStudentQrToken(qrToken: string): StudentQrClaims | null {
+  if (qrToken.length > 2048) return null;
+  const parts = qrToken.split(".");
+  if (
+    parts.length !== 4 ||
+    parts[0] !== studentQrPrefix ||
+    parts.slice(1).some((part) => !/^[A-Za-z0-9_-]+$/.test(part))
+  ) {
+    return null;
+  }
+
+  try {
+    const [, encodedIv, encodedTag, encodedCiphertext] = parts;
+    const iv = Buffer.from(encodedIv, "base64url");
+    const tag = Buffer.from(encodedTag, "base64url");
+    const ciphertext = Buffer.from(encodedCiphertext, "base64url");
+    if (iv.length !== 12 || tag.length !== 16 || ciphertext.length === 0) {
+      return null;
+    }
+
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      studentQrEncryptionKey(),
+      iv,
+    );
+    decipher.setAuthTag(tag);
+    const plaintext = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]).toString("utf8");
+    const claims = JSON.parse(plaintext) as Partial<StudentQrClaims>;
+    if (
+      typeof claims.sessionId !== "string" ||
+      typeof claims.studentId !== "string" ||
+      typeof claims.expiresAt !== "number" ||
+      !Number.isSafeInteger(claims.expiresAt)
+    ) {
+      return null;
+    }
+
+    return {
+      sessionId: claims.sessionId,
+      studentId: claims.studentId,
+      expiresAt: claims.expiresAt,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function ensureSeeded() {
@@ -343,7 +441,6 @@ async function sessionResponse(session: typeof sessionsTable.$inferSelect) {
     courseTitle: course[0]?.title ?? "",
     room: session.room,
     status: currentSessionStatus(session),
-    token: `${session.id}.${session.token}`,
     startsAt: parseDate(session.startsAt),
     endsAt: parseDate(session.endsAt),
     scanCount,
@@ -669,7 +766,45 @@ router.get("/sessions/:sessionId", async (req, res) => {
     return errorResponse(res, 403, "You do not have access to this session");
   }
   const response = await sessionResponse(session[0]);
-  return res.json(user.role === "student" ? { ...response, token: "" } : response);
+  return res.json(response);
+});
+
+router.post("/sessions/:sessionId/student-qr", async (req, res) => {
+  await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "student")) {
+    return errorResponse(res, 403, "Student access is required to request a QR code");
+  }
+
+  const { sessionId } = IssueStudentQrParams.parse(req.params);
+  const session = await db
+    .select()
+    .from(sessionsTable)
+    .where(eq(sessionsTable.id, sessionId))
+    .limit(1);
+  if (!session[0]) {
+    return errorResponse(res, 404, "Session not found");
+  }
+  if (currentSessionStatus(session[0]) !== "active") {
+    return errorResponse(res, 409, "This session is no longer active");
+  }
+  const existingAttendance = await db
+    .select({ id: attendanceTable.id })
+    .from(attendanceTable)
+    .where(
+      and(
+        eq(attendanceTable.sessionId, sessionId),
+        eq(attendanceTable.studentId, user.id),
+      ),
+    )
+    .limit(1);
+  if (existingAttendance[0]) {
+    return errorResponse(res, 409, "Attendance is already recorded for this session");
+  }
+
+  const code = createStudentQrToken(sessionId, user.id);
+  res.setHeader("Cache-Control", "no-store, private");
+  return res.json(IssueStudentQrResponse.parse(code));
 });
 
 router.post("/sessions/:sessionId/end", async (req, res) => {
@@ -749,6 +884,10 @@ router.post("/sessions/:sessionId/scan", async (req, res) => {
   if (!user) return errorResponse(res, 401, "Sign in is required");
   const { sessionId } = ScanAttendanceParams.parse(req.params);
   const body = ScanAttendanceBody.parse(req.body);
+  if (!hasRole(user, "admin", "lecturer")) {
+    return errorResponse(res, 403, "Lecturer access is required to scan attendance");
+  }
+
   const session = await db
     .select()
     .from(sessionsTable)
@@ -756,22 +895,21 @@ router.post("/sessions/:sessionId/scan", async (req, res) => {
     .limit(1);
   if (!session[0]) return errorResponse(res, 404, "Session not found");
   const sessionCourse = await db.select().from(coursesTable).where(eq(coursesTable.id, session[0].courseId)).limit(1);
-  if (user.role === "student" && user.id !== body.studentId) {
-    return errorResponse(res, 403, "Students may only check in for their own account");
-  }
   if (user.role === "lecturer" && sessionCourse[0]?.lecturerId !== user.id) {
     return errorResponse(res, 403, "You do not own this session");
   }
-  if (!hasRole(user, "admin", "lecturer", "student")) {
-    return errorResponse(res, 403, "This account cannot check in to attendance");
-  }
   const status = currentSessionStatus(session[0]);
-  if (status !== "active") return errorResponse(res, 400, "This session is no longer active");
-  const qrPayload = `${session[0].id}.${session[0].token}`;
-  if (body.qrToken !== session[0].token && body.qrToken !== qrPayload) {
-    return errorResponse(res, 400, "This QR code is not valid for the active session");
+  if (status !== "active") return errorResponse(res, 409, "This session is no longer active");
+
+  const claims = decodeStudentQrToken(body.qrToken);
+  if (
+    !claims ||
+    claims.sessionId !== sessionId ||
+    claims.expiresAt <= Date.now()
+  ) {
+    return errorResponse(res, 400, "This student QR code is invalid or expired");
   }
-  const student = await findStudent(body.studentId);
+  const student = await findStudent(claims.studentId);
   if (!student) return errorResponse(res, 400, "Student identity was not found");
 
   const duplicate = await db
@@ -780,17 +918,17 @@ router.post("/sessions/:sessionId/scan", async (req, res) => {
     .where(
       and(
         eq(attendanceTable.sessionId, sessionId),
-        eq(attendanceTable.studentId, body.studentId),
+        eq(attendanceTable.studentId, claims.studentId),
       ),
     )
     .limit(1);
-  if (duplicate[0]) return errorResponse(res, 400, "Attendance already recorded for this session");
+  if (duplicate[0]) return errorResponse(res, 409, "Attendance already recorded for this session");
 
   const [created] = await db
     .insert(attendanceTable)
     .values({
       id: `attendance-${randomUUID()}`,
-      studentId: body.studentId,
+      studentId: claims.studentId,
       courseId: session[0].courseId,
       sessionId,
       status: "present",

@@ -14,7 +14,6 @@ export interface AttendanceSession {
   courseTitle: string;
   room: string;
   status: AttendanceSessionStatus;
-  token: string;
   startsAt: Date;
   endsAt: Date;
   scanCount: number;

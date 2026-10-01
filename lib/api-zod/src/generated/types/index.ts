@@ -26,6 +26,7 @@ export * from './reportSummary';
 export * from './roleParamParameter';
 export * from './scanInput';
 export * from './sessionInput';
+export * from './studentQrToken';
 export * from './trendPoint';
 export * from './user';
 export * from './userRole';

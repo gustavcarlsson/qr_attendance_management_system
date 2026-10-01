@@ -17,6 +17,7 @@ import {
   useEndSession, useListSessionAttendance, useScanAttendance, useGetAttendanceReport,
   useGetStudentAttendance, useCreateCourse, useUpdateCourse, useDeleteCourse,
   useListUsers, useUpdateUserRole,
+  useIssueStudentQr,
   getGetDashboardSummaryQueryKey, getGetCurrentUserQueryKey, getListCoursesQueryKey, getListUsersQueryKey,
   getGetSessionQueryKey, getListSessionAttendanceQueryKey, getGetAttendanceReportQueryKey,
   getGetStudentAttendanceQueryKey,
@@ -250,15 +251,85 @@ function SessionCard({ course }: { course: AnyRecord; active?: boolean }) {
 }
 
 function SessionDetail() {
-  const { sessionId = '' } = useParams<{ sessionId: string }>(); const { data: session, isLoading, isError, refetch } = useGetSession(sessionId, { query: { queryKey: getGetSessionQueryKey(sessionId) } }); const { data: attendance, isLoading: attendanceLoading } = useListSessionAttendance(sessionId, { query: { queryKey: getListSessionAttendanceQueryKey(sessionId), refetchInterval: 15000 } }); const end = useEndSession(); const scan = useScanAttendance(); const client = useQueryClient(); const [studentId, setStudentId] = useState(''); const [token, setToken] = useState(''); const [ended, setEnded] = useState(false);
-  const current = session as AnyRecord | undefined; const records = (attendance as AnyRecord[] | undefined) || [];
+  const { sessionId = '' } = useParams<{ sessionId: string }>();
+  const { data: session, isLoading, isError, refetch } = useGetSession(sessionId, {
+    query: { queryKey: getGetSessionQueryKey(sessionId) },
+  });
+  const { data: attendance, isLoading: attendanceLoading } = useListSessionAttendance(sessionId, {
+    query: { queryKey: getListSessionAttendanceQueryKey(sessionId), refetchInterval: 15000 },
+  });
+  const end = useEndSession();
+  const scan = useScanAttendance();
+  const client = useQueryClient();
+  const [ended, setEnded] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanMessage, setScanMessage] = useState('');
+  const current = session as AnyRecord | undefined;
+  const records = (attendance as AnyRecord[] | undefined) || [];
+
   if (isLoading) return <><Skeleton className="h-10 w-48" /><Skeleton className="mt-3 h-8 w-80" /><div className="mt-8 grid gap-6 lg:grid-cols-[.7fr_1.3fr]"><Skeleton className="h-[490px]" /><Skeleton className="h-[490px]" /></div></>;
   if (isError || !current) return <EmptyState icon={CircleAlert} title="Session not found" body="This attendance room may have ended or the link is no longer valid." action={<PrimaryButton testId="button-retry-session" onClick={() => refetch()}><RefreshCw size={15} /> Try again</PrimaryButton>} />;
-  const submitScan = () => { if (!studentId || !token) return; scan.mutate({ sessionId, data: { studentId, qrToken: token } }, { onSuccess: () => { setStudentId(''); setToken(''); client.invalidateQueries({ queryKey: getListSessionAttendanceQueryKey(sessionId) }); client.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) }); } }); };
-  const closeSession = () => end.mutate({ sessionId }, { onSuccess: () => { setEnded(true); client.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) }); } });
-  return <><div className="mb-7 flex items-center gap-2 text-xs text-muted-foreground"><Link href="/sessions" data-testid="link-back-sessions" className="hover:text-primary">Sessions</Link><ChevronRight size={14} /><span>{current.courseCode}</span></div><PageHeading eyebrow={current.status === 'active' && !ended ? 'Live attendance room' : 'Session complete'} title={current.courseTitle} body={`${current.courseCode} · ${current.room} · started ${formatTime(current.startsAt)}`} action={<div className="flex gap-2"><Badge tone={current.status === 'active' && !ended ? 'live' : 'neutral'}>{current.status === 'active' && !ended ? 'Accepting scans' : 'Ended'}</Badge>{current.status === 'active' && !ended && <PrimaryButton variant="danger" testId="button-end-session" onClick={closeSession} disabled={end.isPending}><DoorOpen size={15} /> {end.isPending ? 'Ending…' : 'End session'}</PrimaryButton>}</div>} />
-    <div className="grid gap-6 lg:grid-cols-[.72fr_1.28fr]"><section className="rounded-2xl border border-border bg-sidebar p-6 text-sidebar-foreground shadow-xl"><div className="flex items-center justify-between"><div><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-sidebar-primary">Active session QR</div><div className="mt-1 text-sm text-sidebar-foreground/65">Students scan this code to check in</div></div><ShieldCheck size={19} className="text-sidebar-primary" /></div><div className="mx-auto mt-8 flex aspect-square max-w-[270px] items-center justify-center rounded-3xl bg-[#fbfaf6] p-5"><QrVisual token={current.token} /></div><div className="mt-6 text-center"><div className="font-mono-ui text-[10px] uppercase tracking-[.14em] text-sidebar-foreground/50">Time-limited token</div><div className="mt-2 break-all font-mono-ui text-sm tracking-[.12em] text-sidebar-primary">{current.token || 'Unavailable'}</div></div><div className="mt-6 flex items-center justify-between border-t border-sidebar-border pt-4 text-xs text-sidebar-foreground/60"><span>Expires {formatTime(current.endsAt)}</span><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-sidebar-primary" />Secure verification</span></div></section>
-      <section className="rounded-2xl border border-border bg-card"><div className="flex flex-col justify-between gap-4 border-b border-border p-5 sm:flex-row sm:items-center sm:p-6"><div><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Scan activity</div><h2 className="mt-1 font-display text-2xl">{current.scanCount} <span className="text-base font-normal text-muted-foreground">of {current.totalStudents} checked in</span></h2></div><div className="w-full sm:w-40"><div className="mb-2 flex justify-between text-[11px] text-muted-foreground"><span>Attendance</span><span className="font-bold text-primary">{current.attendanceRate}%</span></div><ProgressBar value={current.attendanceRate} /></div></div><div className="border-b border-border bg-muted/35 px-5 py-4"><div className="flex items-center gap-2 text-xs font-semibold"><ScanLine size={15} className="text-primary" /> Manual scan validation</div><div className="mt-3 flex flex-col gap-2 sm:flex-row"><input value={studentId} onChange={e => setStudentId(e.target.value)} data-testid="input-scan-student-id" placeholder="Student ID" className="min-w-0 flex-1 rounded-lg border border-input bg-card px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-primary/30" /><input value={token} onChange={e => setToken(e.target.value)} data-testid="input-scan-token" placeholder="QR token" className="min-w-0 flex-1 rounded-lg border border-input bg-card px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-primary/30" /><PrimaryButton testId="button-validate-scan" onClick={submitScan} disabled={scan.isPending || !studentId || !token}>{scan.isPending ? 'Checking…' : <><Check size={14} /> Validate</>}</PrimaryButton></div>{scan.isError && <div className="mt-2 text-xs text-destructive">This scan was rejected. Check the student ID and token.</div>}{scan.isSuccess && <div className="mt-2 text-xs text-emerald-700">Presence verified and added to the room.</div>}</div><div className="max-h-[355px] overflow-auto">{attendanceLoading ? [1,2,3,4].map(i => <div className="flex gap-3 border-b border-border p-4" key={i}><Skeleton className="h-8 w-8" /><Skeleton className="h-8 flex-1" /></div>) : records.length ? records.map((record: AnyRecord) => <div key={record.id} className="flex items-center gap-3 border-b border-border px-5 py-4 last:border-0"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">{initials(record.studentName)}</div><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{record.studentName}</div><div className="font-mono-ui text-[10px] text-muted-foreground">{record.matricNumber}</div></div><div className="text-right"><Badge tone={record.status === 'present' ? 'good' : record.status === 'late' ? 'warn' : 'danger'}>{record.status}</Badge><div className="mt-1 text-[10px] text-muted-foreground">{formatTime(record.scannedAt)}</div></div></div>) : <EmptyState icon={ScanLine} title="Waiting for the first scan" body="Student check-ins will appear here in real time." />}</div></section></div></>;
+
+  const scanStudentQr = async (qrToken: string) => {
+    setScanMessage('');
+    try {
+      const record = await scan.mutateAsync({ sessionId, data: { qrToken } });
+      setScanMessage(`${record.studentName} checked in successfully.`);
+      void client.invalidateQueries({ queryKey: getListSessionAttendanceQueryKey(sessionId) });
+      void client.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+    } catch {
+      setScanMessage('This student QR is invalid, expired, or already recorded.');
+    }
+  };
+  const closeSession = () => end.mutate({ sessionId }, {
+    onSuccess: () => {
+      setEnded(true);
+      setScannerOpen(false);
+      void client.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) });
+    },
+  });
+
+  return <>
+    <div className="mb-7 flex items-center gap-2 text-xs text-muted-foreground"><Link href="/sessions" data-testid="link-back-sessions" className="hover:text-primary">Sessions</Link><ChevronRight size={14} /><span>{current.courseCode}</span></div>
+    <PageHeading
+      eyebrow={current.status === 'active' && !ended ? 'Live attendance room' : 'Session complete'}
+      title={current.courseTitle}
+      body={`${current.courseCode} · ${current.room} · started ${formatTime(current.startsAt)}`}
+      action={<div className="flex gap-2"><Badge tone={current.status === 'active' && !ended ? 'live' : 'neutral'}>{current.status === 'active' && !ended ? 'Accepting scans' : 'Ended'}</Badge>{current.status === 'active' && !ended && <PrimaryButton variant="danger" testId="button-end-session" onClick={closeSession} disabled={end.isPending}><DoorOpen size={15} /> {end.isPending ? 'Ending…' : 'End session'}</PrimaryButton>}</div>}
+    />
+    <div className="grid gap-6 lg:grid-cols-[.72fr_1.28fr]">
+      <section className="flex flex-col rounded-2xl border border-border bg-sidebar p-6 text-sidebar-foreground shadow-xl">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-sidebar-primary">Lecturer camera scanner</div>
+            <h2 className="mt-2 font-display text-2xl">Scan student codes</h2>
+            <p className="mt-2 text-sm leading-6 text-sidebar-foreground/65">Scan each student’s personal QR code. Codes are encrypted, tied to this active session, and expire after 30 seconds.</p>
+          </div>
+          <Camera size={20} className="shrink-0 text-sidebar-primary" />
+        </div>
+        <div className="mt-8 flex min-h-44 flex-1 flex-col items-center justify-center rounded-2xl border border-sidebar-border bg-sidebar-accent/45 p-5 text-center">
+          <ScanLine size={34} className="text-sidebar-primary" />
+          <div className="mt-3 text-sm font-semibold">{scannerOpen ? 'Camera scanner is open' : 'Ready for student check-in'}</div>
+          <div className="mt-1 max-w-xs text-xs leading-5 text-sidebar-foreground/60">Keep this session monitor open while students present their codes.</div>
+          {current.status === 'active' && !ended && <div className="mt-5"><PrimaryButton testId="button-open-attendance-scanner" onClick={() => setScannerOpen(true)} disabled={scan.isPending}><Camera size={15} /> {scannerOpen ? 'Scanner open' : 'Open camera scanner'}</PrimaryButton></div>}
+        </div>
+        {scanMessage && <div role="status" data-testid="status-scan-result" className={cx('mt-4 rounded-xl px-3 py-2.5 text-sm', scanMessage.includes('successfully') ? 'bg-emerald-400/10 text-emerald-200' : 'bg-destructive/15 text-red-100')}>{scanMessage}</div>}
+        <div className="mt-5 flex items-center gap-2 border-t border-sidebar-border pt-4 text-xs text-sidebar-foreground/60"><ShieldCheck size={14} className="text-sidebar-primary" /> Server-verified identity · duplicate scans rejected</div>
+      </section>
+      <section className="rounded-2xl border border-border bg-card">
+        <div className="flex flex-col justify-between gap-4 border-b border-border p-5 sm:flex-row sm:items-center sm:p-6">
+          <div><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Scan activity</div><h2 className="mt-1 font-display text-2xl">{current.scanCount} <span className="text-base font-normal text-muted-foreground">of {current.totalStudents} checked in</span></h2></div>
+          <div className="w-full sm:w-40"><div className="mb-2 flex justify-between text-[11px] text-muted-foreground"><span>Attendance</span><span className="font-bold text-primary">{current.attendanceRate}%</span></div><ProgressBar value={current.attendanceRate} /></div>
+        </div>
+        <div className="max-h-[455px] overflow-auto">
+          {attendanceLoading ? [1,2,3,4].map(i => <div className="flex gap-3 border-b border-border p-4" key={i}><Skeleton className="h-8 w-8" /><Skeleton className="h-8 flex-1" /></div>)
+            : records.length ? records.map((record: AnyRecord) => <div key={record.id} className="flex items-center gap-3 border-b border-border px-5 py-4 last:border-0"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">{initials(record.studentName)}</div><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{record.studentName}</div><div className="font-mono-ui text-[10px] text-muted-foreground">{record.matricNumber}</div></div><div className="text-right"><Badge tone={record.status === 'present' ? 'good' : record.status === 'late' ? 'warn' : 'danger'}>{record.status}</Badge><div className="mt-1 text-[10px] text-muted-foreground">{formatTime(record.scannedAt)}</div></div></div>)
+              : <div className="p-5"><EmptyState icon={ScanLine} title="Waiting for the first scan" body="Student check-ins will appear here in real time." /></div>}
+        </div>
+      </section>
+    </div>
+    {scannerOpen && current.status === 'active' && !ended && <AttendanceScanner onScan={scanStudentQr} onClose={() => setScannerOpen(false)} statusMessage={scanMessage} isChecking={scan.isPending} />}
+  </>;
 }
 
 function CoursesPage() {
@@ -423,13 +494,10 @@ function AdminUsersPage() {
   </>;
 }
 
-function QrVisual({ token }: { token?: string }) {
-  if (!token) return <div className="text-sm text-muted-foreground">QR unavailable</div>;
-  return <QRCodeSVG value={token} size={230} level="H" includeMargin />;
-}
-
-function AttendanceScanner({ onScan, onClose }: { onScan: (value: string) => void; onClose: () => void }) {
+function AttendanceScanner({ onScan, onClose, statusMessage, isChecking }: { onScan: (value: string) => Promise<void>; onClose: () => void; statusMessage?: string; isChecking?: boolean }) {
   const onScanRef = useRef(onScan);
+  const processingRef = useRef(false);
+  const seenTokensRef = useRef(new Set<string>());
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
 
@@ -447,18 +515,20 @@ function AttendanceScanner({ onScan, onClose }: { onScan: (value: string) => voi
         await scanner.start(
           { facingMode: 'environment' },
           { fps: 10, qrbox: { width: 230, height: 230 }, aspectRatio: 1 },
-          async (decoded) => {
-            if (!mounted) return;
-            const separator = decoded.indexOf('.');
-            if (separator <= 0 || separator === decoded.length - 1) {
-              setError('This is not an Attendly session QR code.');
+          (decoded) => {
+            if (!mounted || processingRef.current || seenTokensRef.current.has(decoded)) return;
+            if (!decoded.startsWith('aq1.') || decoded.length > 2048) {
+              setError('This is not a valid student attendance QR code.');
               return;
             }
-            const activeScanner = scanner;
-            if (activeScanner?.isScanning) {
-              await activeScanner.stop().catch(() => undefined);
-            }
-            if (mounted) onScanRef.current(decoded);
+            processingRef.current = true;
+            seenTokensRef.current.add(decoded);
+            setError('');
+            void onScanRef.current(decoded).finally(() => {
+              window.setTimeout(() => {
+                processingRef.current = false;
+              }, 900);
+            });
           },
           () => undefined,
         );
@@ -486,17 +556,85 @@ function AttendanceScanner({ onScan, onClose }: { onScan: (value: string) => voi
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-primary">Camera check-in</div>
-          <h2 id="scanner-title" className="mt-1 font-display text-2xl">Scan the class QR</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Point your camera at the lecturer’s active session code.</p>
+          <h2 id="scanner-title" className="mt-1 font-display text-2xl">Scan student QR codes</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Point the camera at each student’s personal, expiring QR code.</p>
         </div>
         <button onClick={onClose} aria-label="Close scanner" className="rounded-lg p-2 text-muted-foreground hover:bg-muted"><X size={18} /></button>
       </div>
       <div className="mt-5 overflow-hidden rounded-2xl bg-slate-950 p-2">
         <div id="attendance-camera-view" className="min-h-[280px] w-full" />
       </div>
-      <p aria-live="polite" className={cx('mt-3 text-sm', error ? 'text-destructive' : 'text-muted-foreground')}>
-        {error || (ready ? 'Camera is ready. Hold the QR code inside the frame.' : 'Requesting camera access…')}
+      <p aria-live="polite" className={cx('mt-3 text-sm', error || statusMessage?.toLowerCase().includes('invalid') ? 'text-destructive' : statusMessage ? 'text-emerald-700' : 'text-muted-foreground')}>
+        {error || (isChecking ? 'Checking this code with the attendance server…' : statusMessage || (ready ? 'Camera is ready. Scan one code after another without closing this window.' : 'Requesting camera access…'))}
       </p>
+    </section>
+  </div>;
+}
+
+function StudentQrDialog({ session, onClose }: { session: { id: string; code: string; title: string }; onClose: () => void }) {
+  const issueQr = useIssueStudentQr();
+  const [qr, setQr] = useState<{ qrToken: string; expiresAt: string } | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const stoppedRef = useRef(false);
+
+  useEffect(() => {
+    let mounted = true;
+    let requesting = false;
+    const requestToken = () => {
+      if (requesting || stoppedRef.current) return;
+      requesting = true;
+      issueQr.mutate(
+        { sessionId: session.id },
+        {
+          onSuccess: (result) => {
+            if (mounted) setQr(result);
+            requesting = false;
+          },
+          onError: () => {
+            stoppedRef.current = true;
+            if (mounted) setQr(null);
+            requesting = false;
+          },
+        },
+      );
+    };
+
+    requestToken();
+    const refreshTimer = window.setInterval(requestToken, 20_000);
+    const clockTimer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => {
+      mounted = false;
+      window.clearInterval(refreshTimer);
+      window.clearInterval(clockTimer);
+    };
+  }, [issueQr.mutate, session.id]);
+
+  const secondsRemaining = qr
+    ? Math.max(0, Math.ceil((Date.parse(qr.expiresAt) - now) / 1000))
+    : 0;
+  const failed = issueQr.isError && !qr;
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4 backdrop-blur-sm">
+    <section role="dialog" aria-modal="true" aria-labelledby="student-qr-title" className="w-full max-w-md rounded-3xl border border-border bg-card p-6 text-center shadow-2xl">
+      <div className="flex items-start justify-between text-left">
+        <div>
+          <div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-primary">Student check-in code</div>
+          <h2 id="student-qr-title" className="mt-1 font-display text-2xl">{session.code}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{session.title}</p>
+        </div>
+        <button onClick={onClose} aria-label="Close student QR code" className="rounded-lg p-2 text-muted-foreground hover:bg-muted"><X size={18} /></button>
+      </div>
+      <div className="mx-auto mt-6 flex aspect-square w-full max-w-[270px] items-center justify-center rounded-2xl border border-border bg-white p-4">
+        {qr && secondsRemaining > 0
+          ? <QRCodeSVG value={qr.qrToken} size={230} level="H" includeMargin data-testid="img-student-attendance-qr" />
+          : issueQr.isPending ? <div className="space-y-3 text-sm text-muted-foreground"><Skeleton className="mx-auto h-48 w-48" />Preparing your code…</div>
+            : failed ? <div role="alert" className="px-4 text-sm text-destructive">This session may have ended, or your attendance may already be recorded. Close this window and refresh the page.</div>
+              : <div className="text-sm text-muted-foreground">Refreshing your code…</div>}
+      </div>
+      <p aria-live="polite" data-testid="text-student-qr-expiry" className="mt-4 text-sm text-muted-foreground">
+        {qr && secondsRemaining > 0 ? `Refreshes automatically · expires in ${secondsRemaining}s` : failed ? 'A new code is unavailable.' : 'Requesting a secure code…'}
+      </p>
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">Show this code to your lecturer. It is encrypted, tied to this active class, and valid for 30 seconds.</p>
     </section>
   </div>;
 }
@@ -508,34 +646,14 @@ function StudentPage() {
   const { data, isLoading, isError, refetch } = useGetStudentAttendance(studentId, {
     query: { queryKey: getGetStudentAttendanceQueryKey(studentId), enabled: Boolean(studentId) },
   });
+  const { data: courses, isLoading: coursesLoading, isError: coursesError } = useListCourses(
+    undefined,
+    { query: { queryKey: getListCoursesQueryKey(), refetchInterval: 15000 } },
+  );
   const records = (data as AnyRecord[] | undefined) || [];
-  const scan = useScanAttendance();
-  const client = useQueryClient();
-  const [scannerOpen, setScannerOpen] = useState(false);
-  const [scanMessage, setScanMessage] = useState('');
-
-  const handleScannedQr = (payload: string) => {
-    const separator = payload.indexOf('.');
-    if (separator <= 0 || separator === payload.length - 1) {
-      setScanMessage('This code is not a valid Attendly session QR.');
-      return;
-    }
-    setScanMessage('');
-    scan.mutate(
-      {
-        sessionId: payload.slice(0, separator),
-        data: { studentId, qrToken: payload },
-      },
-      {
-        onSuccess: () => {
-          setScannerOpen(false);
-          setScanMessage('Attendance recorded for this session.');
-          client.invalidateQueries({ queryKey: getGetStudentAttendanceQueryKey(studentId) });
-        },
-        onError: () => setScanMessage('The QR code is invalid, expired, or already used.'),
-      },
-    );
-  };
+  const courseList = (courses as AnyRecord[] | undefined) || [];
+  const activeSessions = courseList.filter(course => course.activeSessionId);
+  const [qrSession, setQrSession] = useState<{ id: string; code: string; title: string } | null>(null);
 
   if (!student) return <EmptyState title="Loading your account" body="Your verified student profile is being loaded." />;
   if (student.role !== 'student') {
@@ -546,26 +664,32 @@ function StudentPage() {
     <PageHeading
       eyebrow="Student attendance"
       title="Your presence, verified."
-      body="Scan the lecturer’s active class QR code to record attendance against your signed-in account."
-      action={<PrimaryButton testId="button-open-attendance-scanner" onClick={() => { setScanMessage(''); setScannerOpen(true); }} disabled={scan.isPending}><Camera size={16} /> Scan class QR</PrimaryButton>}
+      body="Show your personal, short-lived QR code to the lecturer when your class session is open."
     />
-    {scanMessage && <div role="status" className={cx('mb-5 rounded-xl px-4 py-3 text-sm', scan.isError ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary')}>{scanMessage}</div>}
     <div className="grid gap-6 lg:grid-cols-[.72fr_1.28fr]">
-      <section className="overflow-hidden rounded-3xl bg-sidebar p-6 text-sidebar-foreground shadow-xl sm:p-8">
+      <section className="rounded-3xl bg-sidebar p-6 text-sidebar-foreground shadow-xl sm:p-8">
         <div className="flex items-center justify-between">
           <div className="font-display text-xl">Attend<span className="text-sidebar-primary">ly</span></div>
           <Badge tone="live">Signed in</Badge>
         </div>
-        <div className="mx-auto mt-8 flex aspect-square max-w-[240px] flex-col items-center justify-center rounded-3xl border border-sidebar-border bg-sidebar-accent/60 p-6 text-center">
-          <div className="mb-4 rounded-2xl bg-sidebar-primary/15 p-4 text-sidebar-primary"><QrCode size={38} /></div>
-          <div className="font-semibold">Ready to check in</div>
-          <div className="mt-1 text-xs text-sidebar-foreground/60">Scan a time-limited code shown by your lecturer.</div>
-        </div>
-        <div className="mt-7 border-t border-sidebar-border pt-5">
+        <div className="mt-6 border-b border-sidebar-border pb-5">
           <div className="text-lg font-semibold">{student.name}</div>
           <div className="mt-1 text-xs text-sidebar-foreground/65">{student.matricNumber || student.email}</div>
           <div className="mt-1 text-xs text-sidebar-foreground/55">{student.department}</div>
         </div>
+        <div className="mt-5">
+          <div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-sidebar-primary">Open class sessions</div>
+          <div className="mt-3 space-y-2">
+            {coursesLoading ? <Skeleton className="h-20 bg-sidebar-accent" />
+              : coursesError ? <div role="alert" className="rounded-xl bg-destructive/15 p-3 text-xs text-red-100">Active sessions could not be loaded. Refresh the page to try again.</div>
+                : activeSessions.length ? activeSessions.map(course => <div key={course.id} className="flex items-center gap-3 rounded-xl border border-sidebar-border bg-sidebar-accent/45 p-3">
+                  <div className="min-w-0 flex-1"><div className="font-mono-ui text-[10px] font-semibold text-sidebar-primary">{course.code}</div><div className="truncate text-sm font-semibold">{course.title}</div></div>
+                  <button onClick={() => setQrSession({ id: course.activeSessionId, code: course.code, title: course.title })} data-testid={`button-show-student-qr-${course.id}`} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-sidebar-primary px-3 py-2 text-xs font-semibold text-sidebar-primary-foreground hover:brightness-95"><QrCode size={14} /> Show my QR</button>
+                </div>)
+                  : <div className="rounded-xl border border-dashed border-sidebar-border p-4 text-xs leading-5 text-sidebar-foreground/65">Your lecturer’s active class will appear here. The list refreshes automatically.</div>}
+          </div>
+        </div>
+        <div className="mt-5 flex items-center gap-2 border-t border-sidebar-border pt-4 text-xs text-sidebar-foreground/60"><ShieldCheck size={14} className="text-sidebar-primary" /> Personal QR · encrypted · expires after 30 seconds</div>
       </section>
       <section className="rounded-2xl border border-border bg-card">
         <div className="border-b border-border p-5 sm:p-6">
@@ -575,10 +699,10 @@ function StudentPage() {
         {isError ? <div className="p-6"><EmptyState icon={CircleAlert} title="History unavailable" body="We couldn't retrieve your record." action={<PrimaryButton testId="button-retry-student" onClick={() => refetch()}><RefreshCw size={15} /> Retry</PrimaryButton>} /></div>
           : isLoading ? <div className="space-y-3 p-6">{[1, 2, 3].map(i => <Skeleton className="h-14" key={i} />)}</div>
             : records.length ? <div>{records.map((record: AnyRecord) => <div key={record.id} className="flex items-center gap-3 border-b border-border px-5 py-4 last:border-0 sm:px-6"><div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><BookOpen size={16} /></div><div className="min-w-0 flex-1"><div className="font-mono-ui text-[11px] font-semibold text-primary">{record.courseCode}</div><div className="truncate text-sm font-semibold">{record.courseTitle || 'Attendance record'}</div><div className="text-[11px] text-muted-foreground">{formatDate(record.scannedAt)} · {formatTime(record.scannedAt)}</div></div><Badge tone={record.status === 'present' ? 'good' : record.status === 'late' ? 'warn' : 'danger'}>{record.status}</Badge></div>)}</div>
-              : <div className="p-6"><EmptyState icon={CalendarDays} title="No scans recorded yet" body="Your attendance history will appear after your first verified check-in." /></div>}
+              : <div className="p-6"><EmptyState icon={CalendarDays} title="No scans recorded yet" body="Your attendance history will appear after your lecturer verifies your QR code." /></div>}
       </section>
     </div>
-    {scannerOpen && <AttendanceScanner onScan={handleScannedQr} onClose={() => setScannerOpen(false)} />}
+    {qrSession && <StudentQrDialog session={qrSession} onClose={() => setQrSession(null)} />}
   </>;
 }
 
@@ -629,7 +753,7 @@ function PublicLandingPage() {
         <div className="relative rounded-3xl border border-border bg-card p-5 shadow-xl sm:p-7">
           <div className="flex items-center justify-between border-b border-border pb-4"><div><div className="font-mono-ui text-[10px] uppercase tracking-[.16em] text-muted-foreground">How it works</div><div className="mt-1 font-display text-2xl">A simple class check-in</div></div><span className="rounded-xl bg-primary/10 p-3 text-primary"><QrCode size={22} /></span></div>
           <div className="mt-5 space-y-4">
-            {[['01', 'Lecturer opens a session', 'A unique QR code expires with the class window.'], ['02', 'Student scans the code', 'The camera check-in uses the signed-in student account.'], ['03', 'Attendance is recorded', 'Duplicate and expired check-ins are rejected.']].map(([number, title, body]) => <div key={number} className="flex gap-4 rounded-2xl border border-border/70 p-4"><div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 font-mono-ui text-xs font-bold text-primary">{number}</div><div><div className="text-sm font-semibold">{title}</div><div className="mt-1 text-xs leading-5 text-muted-foreground">{body}</div></div></div>)}
+            {[['01', 'Lecturer opens a session', 'The class check-in window becomes available.'], ['02', 'Student presents a personal QR', 'The lecturer scans it with the session camera.'], ['03', 'Attendance is recorded', 'Encrypted codes expire quickly; duplicate scans are rejected.']].map(([number, title, body]) => <div key={number} className="flex gap-4 rounded-2xl border border-border/70 p-4"><div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 font-mono-ui text-xs font-bold text-primary">{number}</div><div><div className="text-sm font-semibold">{title}</div><div className="mt-1 text-xs leading-5 text-muted-foreground">{body}</div></div></div>)}
           </div>
           <div className="mt-5 flex items-center gap-2 rounded-xl bg-sidebar px-4 py-3 text-xs text-sidebar-foreground"><ShieldCheck size={16} className="text-sidebar-primary" /> Verified sign-in · role-based access · expiring session codes</div>
         </div>

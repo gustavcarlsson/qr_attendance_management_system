@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface ScanInput {
+export interface StudentQrToken {
   qrToken: string;
+  expiresAt: Date;
 }
