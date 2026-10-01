@@ -255,8 +255,15 @@ function SessionDetail() {
   const { data: session, isLoading, isError, refetch } = useGetSession(sessionId, {
     query: { queryKey: getGetSessionQueryKey(sessionId) },
   });
-  const { data: attendance, isLoading: attendanceLoading } = useListSessionAttendance(sessionId, {
-    query: { queryKey: getListSessionAttendanceQueryKey(sessionId), refetchInterval: 15000 },
+  const { data: user } = useGetCurrentUser();
+  const currentUser = user as AnyRecord | undefined;
+  const hasScanRole = currentUser?.role === 'admin' || currentUser?.role === 'lecturer';
+  const { data: attendance, isLoading: attendanceLoading, error: attendanceError } = useListSessionAttendance(sessionId, {
+    query: {
+      queryKey: getListSessionAttendanceQueryKey(sessionId),
+      enabled: hasScanRole,
+      refetchInterval: (query) => (query.state.error as { status?: number } | null)?.status === 403 ? false : 15000,
+    },
   });
   const end = useEndSession();
   const scan = useScanAttendance();
@@ -266,6 +273,23 @@ function SessionDetail() {
   const [scanMessage, setScanMessage] = useState('');
   const current = session as AnyRecord | undefined;
   const records = (attendance as AnyRecord[] | undefined) || [];
+  const attendanceStatus = (attendanceError as { status?: number } | null)?.status;
+  const canScanSession = hasScanRole && !attendanceLoading && !attendanceError;
+  const scanAccessMessage = !currentUser
+    ? 'Checking your account access…'
+    : !hasScanRole
+      ? 'Sign in with a lecturer or administrator account to scan attendance.'
+      : attendanceLoading
+        ? 'Checking access to this session…'
+        : attendanceStatus === 403
+          ? 'Only this course’s assigned lecturer or an administrator can scan this session.'
+          : attendanceError
+            ? 'Could not verify access to this session. Reload and try again.'
+            : '';
+
+  useEffect(() => {
+    if (!canScanSession && scannerOpen) setScannerOpen(false);
+  }, [canScanSession, scannerOpen]);
 
   if (isLoading) return <><Skeleton className="h-10 w-48" /><Skeleton className="mt-3 h-8 w-80" /><div className="mt-8 grid gap-6 lg:grid-cols-[.7fr_1.3fr]"><Skeleton className="h-[490px]" /><Skeleton className="h-[490px]" /></div></>;
   if (isError || !current) return <EmptyState icon={CircleAlert} title="Session not found" body="This attendance room may have ended or the link is no longer valid." action={<PrimaryButton testId="button-retry-session" onClick={() => refetch()}><RefreshCw size={15} /> Try again</PrimaryButton>} />;
@@ -311,7 +335,11 @@ function SessionDetail() {
           <ScanLine size={34} className="text-sidebar-primary" />
           <div className="mt-3 text-sm font-semibold">{scannerOpen ? 'Camera scanner is open' : 'Ready for student check-in'}</div>
           <div className="mt-1 max-w-xs text-xs leading-5 text-sidebar-foreground/60">Keep this session monitor open while students present their codes.</div>
-          {current.status === 'active' && !ended && <div className="mt-5"><PrimaryButton testId="button-open-attendance-scanner" onClick={() => setScannerOpen(true)} disabled={scan.isPending}><Camera size={15} /> {scannerOpen ? 'Scanner open' : 'Open camera scanner'}</PrimaryButton></div>}
+          {current.status === 'active' && !ended && <div className="mt-5">
+            {canScanSession
+              ? <PrimaryButton testId="button-open-attendance-scanner" onClick={() => setScannerOpen(true)} disabled={scan.isPending}><Camera size={15} /> {scannerOpen ? 'Scanner open' : 'Open camera scanner'}</PrimaryButton>
+              : <p role="status" className="max-w-xs text-xs leading-5 text-sidebar-foreground/70">{scanAccessMessage}</p>}
+          </div>}
         </div>
         {scanMessage && <div role="status" data-testid="status-scan-result" className={cx('mt-4 rounded-xl px-3 py-2.5 text-sm', scanMessage.includes('successfully') ? 'bg-emerald-400/10 text-emerald-200' : 'bg-destructive/15 text-red-100')}>{scanMessage}</div>}
         <div className="mt-5 flex items-center gap-2 border-t border-sidebar-border pt-4 text-xs text-sidebar-foreground/60"><ShieldCheck size={14} className="text-sidebar-primary" /> Server-verified identity · duplicate scans rejected</div>
@@ -323,12 +351,14 @@ function SessionDetail() {
         </div>
         <div className="max-h-[455px] overflow-auto">
           {attendanceLoading ? [1,2,3,4].map(i => <div className="flex gap-3 border-b border-border p-4" key={i}><Skeleton className="h-8 w-8" /><Skeleton className="h-8 flex-1" /></div>)
-            : records.length ? records.map((record: AnyRecord) => <div key={record.id} className="flex items-center gap-3 border-b border-border px-5 py-4 last:border-0"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">{initials(record.studentName)}</div><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{record.studentName}</div><div className="font-mono-ui text-[10px] text-muted-foreground">{record.matricNumber}</div></div><div className="text-right"><Badge tone={record.status === 'present' ? 'good' : record.status === 'late' ? 'warn' : 'danger'}>{record.status}</Badge><div className="mt-1 text-[10px] text-muted-foreground">{formatTime(record.scannedAt)}</div></div></div>)
-              : <div className="p-5"><EmptyState icon={ScanLine} title="Waiting for the first scan" body="Student check-ins will appear here in real time." /></div>}
+            : !hasScanRole ? <div className="p-5"><EmptyState icon={CircleAlert} title="Lecturer access required" body={scanAccessMessage} /></div>
+            : attendanceError ? <div className="p-5"><EmptyState icon={CircleAlert} title={attendanceStatus === 403 ? 'You cannot monitor this session' : 'Attendance could not be loaded'} body={scanAccessMessage} /></div>
+              : records.length ? records.map((record: AnyRecord) => <div key={record.id} className="flex items-center gap-3 border-b border-border px-5 py-4 last:border-0"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">{initials(record.studentName)}</div><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{record.studentName}</div><div className="font-mono-ui text-[10px] text-muted-foreground">{record.matricNumber}</div></div><div className="text-right"><Badge tone={record.status === 'present' ? 'good' : record.status === 'late' ? 'warn' : 'danger'}>{record.status}</Badge><div className="mt-1 text-[10px] text-muted-foreground">{formatTime(record.scannedAt)}</div></div></div>)
+                : <div className="p-5"><EmptyState icon={ScanLine} title="Waiting for the first scan" body="Student check-ins will appear here in real time." /></div>}
         </div>
       </section>
     </div>
-    {scannerOpen && current.status === 'active' && !ended && <AttendanceScanner onScan={scanStudentQr} onClose={() => setScannerOpen(false)} statusMessage={scanMessage} isChecking={scan.isPending} />}
+    {scannerOpen && canScanSession && current.status === 'active' && !ended && <AttendanceScanner onScan={scanStudentQr} onClose={() => setScannerOpen(false)} statusMessage={scanMessage} isChecking={scan.isPending} />}
   </>;
 }
 
@@ -498,8 +528,14 @@ function AttendanceScanner({ onScan, onClose, statusMessage, isChecking }: { onS
   const onScanRef = useRef(onScan);
   const processingRef = useRef(false);
   const seenTokensRef = useRef(new Set<string>());
+  const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState('');
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const cameraRef = useRef<Html5Qrcode | null>(null);
+  const startTaskRef = useRef<Promise<void> | null>(null);
+  const cleanupTaskRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     onScanRef.current = onScan;
@@ -511,10 +547,30 @@ function AttendanceScanner({ onScan, onClose, statusMessage, isChecking }: { onS
 
     const start = async () => {
       try {
+        await cleanupTaskRef.current;
+        if (!mounted) return;
+        const availableCameras = await Html5Qrcode.getCameras();
+        if (!mounted) return;
+        setCameras(availableCameras);
+        if (availableCameras.length === 0) {
+          throw new Error('No camera was found. Connect a camera or try another device.');
+        }
+
+        const camera = availableCameras.find(({ id }) => id === selectedCameraId)
+          ?? availableCameras.find(({ label }) => /back|rear|environment/i.test(label))
+          ?? availableCameras[0];
         scanner = new Html5Qrcode('attendance-camera-view');
+        cameraRef.current = scanner;
         await scanner.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 230, height: 230 }, aspectRatio: 1 },
+          camera.id,
+          {
+            fps: 12,
+            qrbox: (viewfinderWidth, viewfinderHeight) => {
+              const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.82);
+              return { width: size, height: size };
+            },
+            aspectRatio: 1,
+          },
           (decoded) => {
             if (!mounted || processingRef.current || seenTokensRef.current.has(decoded)) return;
             if (!decoded.startsWith('aq1.') || decoded.length > 2048) {
@@ -532,24 +588,44 @@ function AttendanceScanner({ onScan, onClose, statusMessage, isChecking }: { onS
           },
           () => undefined,
         );
-        if (mounted) setReady(true);
+        if (!mounted) return;
+        setReady(true);
+        setError('');
       } catch (cause) {
         if (mounted) {
-          setError(cause instanceof Error ? cause.message : 'Camera access was not available.');
+          const reason = cause instanceof Error ? cause.message : 'Camera access was not available.';
+          setError(`${reason} Check browser camera permission, then try another camera if available.`);
         }
       }
     };
 
-    void start();
+    const startTask = start();
+    startTaskRef.current = startTask;
     return () => {
       mounted = false;
-      if (scanner?.isScanning) {
-        void scanner.stop().then(() => scanner?.clear()).catch(() => undefined);
-      } else {
-        scanner?.clear();
-      }
+      cleanupTaskRef.current = (async () => {
+        await startTask.catch(() => undefined);
+        if (scanner?.isScanning) await scanner.stop().catch(() => undefined);
+        try {
+          scanner?.clear();
+        } catch {
+          // The camera may already be released by the browser.
+        }
+        if (cameraRef.current === scanner) cameraRef.current = null;
+      })();
     };
-  }, []);
+  }, [selectedCameraId]);
+
+  const closeScanner = async () => {
+    setClosing(true);
+    let scanner = cameraRef.current;
+    if (scanner) {
+      await startTaskRef.current?.catch(() => undefined);
+      scanner = cameraRef.current;
+    }
+    if (scanner?.isScanning) await scanner.stop().catch(() => undefined);
+    onClose();
+  };
 
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/45 p-4 backdrop-blur-sm">
     <section role="dialog" aria-modal="true" aria-labelledby="scanner-title" className="w-full max-w-md rounded-3xl border border-border bg-card p-5 shadow-2xl">
@@ -559,11 +635,26 @@ function AttendanceScanner({ onScan, onClose, statusMessage, isChecking }: { onS
           <h2 id="scanner-title" className="mt-1 font-display text-2xl">Scan student QR codes</h2>
           <p className="mt-1 text-sm text-muted-foreground">Point the camera at each student’s personal, expiring QR code.</p>
         </div>
-        <button onClick={onClose} aria-label="Close scanner" className="rounded-lg p-2 text-muted-foreground hover:bg-muted"><X size={18} /></button>
+        <button onClick={() => void closeScanner()} disabled={closing} aria-label="Close scanner" className="rounded-lg p-2 text-muted-foreground hover:bg-muted disabled:opacity-50"><X size={18} /></button>
       </div>
       <div className="mt-5 overflow-hidden rounded-2xl bg-slate-950 p-2">
         <div id="attendance-camera-view" className="min-h-[280px] w-full" />
       </div>
+      {cameras.length > 1 && <label className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span>Camera</span>
+        <select
+          aria-label="Select attendance camera"
+          value={selectedCameraId || cameras.find(({ label }) => /back|rear|environment/i.test(label))?.id || cameras[0]?.id || ''}
+          onChange={(event) => {
+            setReady(false);
+            setError('');
+            setSelectedCameraId(event.target.value);
+          }}
+          className="max-w-[75%] rounded-lg border border-input bg-background px-2 py-1.5 text-xs"
+        >
+          {cameras.map((camera, index) => <option key={camera.id} value={camera.id}>{camera.label || `Camera ${index + 1}`}</option>)}
+        </select>
+      </label>}
       <p aria-live="polite" className={cx('mt-3 text-sm', error || statusMessage?.toLowerCase().includes('invalid') ? 'text-destructive' : statusMessage ? 'text-emerald-700' : 'text-muted-foreground')}>
         {error || (isChecking ? 'Checking this code with the attendance server…' : statusMessage || (ready ? 'Camera is ready. Scan one code after another without closing this window.' : 'Requesting camera access…'))}
       </p>
