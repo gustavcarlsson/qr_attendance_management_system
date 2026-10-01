@@ -1,27 +1,111 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { Link, Route, Switch, useLocation, useParams, Router as WouterRouter } from 'wouter';
+import { Link, Redirect, Route, Switch, useLocation, useParams, Router as WouterRouter } from 'wouter';
+import { ClerkProvider, SignIn, SignUp, useAuth, useClerk } from '@clerk/react';
+import { publishableKeyFromHost } from '@clerk/react/internal';
+import { shadcn } from '@clerk/themes';
+import { Html5Qrcode } from 'html5-qrcode';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   Activity, ArrowDownRight, ArrowUpRight, BarChart3, BookOpen, Check, ChevronRight, CircleAlert,
-  Download, LayoutDashboard, Menu, MoreHorizontal, QrCode, Radio, RefreshCw, ScanLine,
-  Search, Settings2, ShieldCheck, Sparkles, UsersRound, X, DoorOpen, CalendarDays,
+  Download, LayoutDashboard, LogOut, Menu, MoreHorizontal, QrCode, Radio, RefreshCw, ScanLine,
+  Search, Settings2, ShieldCheck, Sparkles, UsersRound, X, DoorOpen, CalendarDays, Shield,
+  Camera, UserRoundCog, Pencil, Trash2,
 } from 'lucide-react';
 import {
   useGetCurrentUser, useGetDashboardSummary, useListCourses, useCreateSession, useGetSession,
   useEndSession, useListSessionAttendance, useScanAttendance, useGetAttendanceReport,
-  useGetStudentAttendance, getGetDashboardSummaryQueryKey, getListCoursesQueryKey,
+  useGetStudentAttendance, useCreateCourse, useUpdateCourse, useDeleteCourse,
+  useListUsers, useUpdateUserRole,
+  getGetDashboardSummaryQueryKey, getGetCurrentUserQueryKey, getListCoursesQueryKey, getListUsersQueryKey,
   getGetSessionQueryKey, getListSessionAttendanceQueryKey, getGetAttendanceReportQueryKey,
   getGetStudentAttendanceQueryKey,
+  type UserRoleInputRole,
 } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
+import { Input } from '@/components/ui/input';
 import NotFound from '@/pages/not-found';
 import { type ReactNode } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { staleTime: 15_000, refetchOnWindowFocus: true } },
+});
+const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
+const clerkPubKey = publishableKeyFromHost(
+  window.location.hostname,
+  import.meta.env.VITE_CLERK_PUBLISHABLE_KEY,
+);
+const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
+if (!clerkPubKey) throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY');
+
+function stripBase(path: string) {
+  return basePath && path.startsWith(basePath) ? path.slice(basePath.length) || '/' : path;
+}
+
+const clerkAppearance = {
+  theme: shadcn,
+  cssLayerName: 'clerk',
+  options: {
+    logoPlacement: 'inside' as const,
+    logoLinkUrl: basePath || '/',
+    logoImageUrl: `${window.location.origin}${basePath}/logo.svg`,
+  },
+  variables: {
+    colorPrimary: '#2f998b',
+    colorForeground: '#1d2833',
+    colorMutedForeground: '#64717c',
+    colorDanger: '#c74747',
+    colorBackground: '#ffffff',
+    colorInput: '#ffffff',
+    colorInputForeground: '#1d2833',
+    colorNeutral: '#d9e0e5',
+    fontFamily: 'DM Sans, sans-serif',
+    borderRadius: '0.75rem',
+  },
+  elements: {
+    rootBox: 'w-full flex justify-center',
+    cardBox: 'bg-white rounded-2xl w-[440px] max-w-full overflow-hidden shadow-xl',
+    card: '!shadow-none !border-0 !bg-transparent !rounded-none',
+    footer: '!shadow-none !border-0 !bg-transparent !rounded-none',
+    headerTitle: 'text-slate-900 font-bold',
+    headerSubtitle: 'text-slate-600',
+    socialButtonsBlockButtonText: 'text-slate-800 font-semibold',
+    formFieldLabel: 'text-slate-800 font-semibold',
+    footerActionLink: 'text-teal-700 font-semibold',
+    footerActionText: 'text-slate-600',
+    dividerText: 'text-slate-500',
+    identityPreviewEditButton: 'text-teal-700',
+    formFieldSuccessText: 'text-emerald-700',
+    alertText: 'text-red-700',
+    logoBox: 'rounded-lg overflow-hidden',
+    logoImage: 'h-9 w-9',
+    socialButtonsBlockButton: 'rounded-xl border-slate-200',
+    formButtonPrimary: 'rounded-xl font-semibold',
+    formFieldInput: 'rounded-xl border-slate-200 text-slate-900',
+    footerAction: 'text-slate-600',
+    dividerLine: 'bg-slate-200',
+    alert: 'rounded-xl',
+    otpCodeFieldInput: 'rounded-lg border-slate-200 text-slate-900',
+    formFieldRow: 'gap-1',
+    main: 'text-slate-900',
+  },
+};
 
 type AnyRecord = Record<string, any>;
+
+const courseFormSchema = z.object({
+  code: z.string().trim().min(2, 'Enter a course code').max(24),
+  title: z.string().trim().min(2, 'Enter a course title').max(120),
+  department: z.string().trim().min(2, 'Enter a department').max(120),
+  color: z.enum(['teal', 'amber', 'violet', 'blue']),
+});
+type CourseFormValues = z.infer<typeof courseFormSchema>;
 
 const navItems = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -29,6 +113,7 @@ const navItems = [
   { href: '/courses', label: 'Courses', icon: BookOpen },
   { href: '/reports', label: 'Reports', icon: BarChart3 },
   { href: '/student', label: 'Student view', icon: QrCode },
+  { href: '/admin', label: 'User access', icon: UserRoundCog },
 ];
 
 function cx(...parts: Array<string | false | undefined>) { return parts.filter(Boolean).join(' '); }
@@ -58,8 +143,12 @@ function InboxIcon(props: any) { return <Activity {...props} />; }
 function AppShell({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { signOut } = useClerk();
   const { data: user } = useGetCurrentUser();
   const current = user as AnyRecord | undefined;
+  const visibleNavItems = current?.role === 'student'
+    ? navItems.filter(item => item.href === '/student' || item.href === '/courses')
+    : navItems.filter(item => item.href !== '/student' && (current?.role === 'admin' || item.href !== '/admin'));
   return <div className="min-h-[100dvh] bg-background text-foreground">
     <aside className={cx('fixed inset-y-0 left-0 z-40 flex w-[248px] flex-col border-r border-sidebar-border bg-sidebar px-4 py-5 transition-transform lg:translate-x-0', mobileOpen ? 'translate-x-0' : '-translate-x-full')}>
       <div className="flex items-center gap-3 px-3 pb-8">
@@ -68,7 +157,7 @@ function AppShell({ children }: { children: ReactNode }) {
       </div>
       <div className="mb-3 px-3 font-mono-ui text-[10px] uppercase tracking-[.18em] text-sidebar-foreground/45">Command center</div>
       <nav className="space-y-1">
-        {navItems.map(({ href, label, icon: Icon }) => <Link key={href} href={href} data-testid={`link-nav-${label.toLowerCase().replaceAll(' ', '-')}`} onClick={() => setMobileOpen(false)} className={cx('group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors', location === href ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground')}><Icon size={17} /><span>{label}</span>{href === '/sessions' && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-sidebar-primary" />}</Link>)}
+        {visibleNavItems.map(({ href, label, icon: Icon }) => <Link key={href} href={href} data-testid={`link-nav-${label.toLowerCase().replaceAll(' ', '-')}`} onClick={() => setMobileOpen(false)} className={cx('group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors', location === href || (href !== '/' && location.startsWith(`${href}/`)) ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground')}><Icon size={17} /><span>{label}</span>{href === '/sessions' && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-sidebar-primary" />}</Link>)}
       </nav>
       <div className="mt-auto">
         <div className="mb-5 rounded-2xl border border-sidebar-border bg-sidebar-accent/60 p-3">
@@ -76,7 +165,7 @@ function AppShell({ children }: { children: ReactNode }) {
           <p className="mt-1.5 text-[11px] leading-4 text-sidebar-foreground/55">QR validation service is online and ready for today.</p>
         </div>
         <Link href="/settings" data-testid="link-nav-settings" className="flex items-center gap-3 rounded-xl px-3 py-3 text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sidebar-primary/20 text-xs font-bold text-sidebar-primary">{current?.initials || 'AD'}</div><div className="min-w-0"><div className="truncate text-xs font-semibold">{current?.name || 'Academic desk'}</div><div className="truncate text-[10px] text-sidebar-foreground/45">{current?.role || 'administrator'}</div></div><Settings2 size={15} className="ml-auto" />
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sidebar-primary/20 text-xs font-bold text-sidebar-primary">{current?.initials || 'AC'}</div><div className="min-w-0"><div className="truncate text-xs font-semibold">{current?.name || 'Your account'}</div><div className="truncate text-[10px] capitalize text-sidebar-foreground/45">{current?.role || 'loading'}</div></div><Settings2 size={15} className="ml-auto" />
         </Link>
       </div>
     </aside>
@@ -84,10 +173,11 @@ function AppShell({ children }: { children: ReactNode }) {
     <main className="min-h-[100dvh] lg:pl-[248px]">
       <header className="sticky top-0 z-20 flex h-[72px] items-center justify-between border-b border-border/70 bg-background/90 px-5 backdrop-blur-md sm:px-8">
         <button className="rounded-lg p-2 hover:bg-muted lg:hidden" onClick={() => setMobileOpen(true)} data-testid="button-open-menu"><Menu size={20} /></button>
-        <div className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex"><span>Wednesday, October 23</span><span className="text-border">/</span><span className="font-mono-ui text-[11px] text-primary">LIVE ACADEMIC DAY</span></div>
+        <div className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex"><span>{new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</span><span className="text-border">/</span><span className="font-mono-ui text-[11px] text-primary">LIVE ACADEMIC DAY</span></div>
         <div className="ml-auto flex items-center gap-3">
           <div className="hidden items-center gap-2 rounded-full border border-border bg-card px-3 py-2 text-xs text-muted-foreground md:flex"><Activity size={14} className="text-primary" /> All systems operational</div>
-          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-xs font-bold text-primary" data-testid="avatar-current-user">{current?.initials || 'AD'}</div>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-xs font-bold text-primary" data-testid="avatar-current-user">{current?.initials || 'AC'}</div>
+          <button onClick={() => signOut({ redirectUrl: basePath || '/' })} aria-label="Sign out" title="Sign out" data-testid="button-sign-out" className="rounded-lg border border-border bg-card p-2 text-muted-foreground transition hover:bg-muted hover:text-foreground"><LogOut size={17} /></button>
         </div>
       </header>
       <div className="mx-auto max-w-[1440px] px-5 py-7 sm:px-8 sm:py-9">{children}</div>
@@ -167,14 +257,115 @@ function SessionDetail() {
   const submitScan = () => { if (!studentId || !token) return; scan.mutate({ sessionId, data: { studentId, qrToken: token } }, { onSuccess: () => { setStudentId(''); setToken(''); client.invalidateQueries({ queryKey: getListSessionAttendanceQueryKey(sessionId) }); client.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) }); } }); };
   const closeSession = () => end.mutate({ sessionId }, { onSuccess: () => { setEnded(true); client.invalidateQueries({ queryKey: getGetSessionQueryKey(sessionId) }); } });
   return <><div className="mb-7 flex items-center gap-2 text-xs text-muted-foreground"><Link href="/sessions" data-testid="link-back-sessions" className="hover:text-primary">Sessions</Link><ChevronRight size={14} /><span>{current.courseCode}</span></div><PageHeading eyebrow={current.status === 'active' && !ended ? 'Live attendance room' : 'Session complete'} title={current.courseTitle} body={`${current.courseCode} · ${current.room} · started ${formatTime(current.startsAt)}`} action={<div className="flex gap-2"><Badge tone={current.status === 'active' && !ended ? 'live' : 'neutral'}>{current.status === 'active' && !ended ? 'Accepting scans' : 'Ended'}</Badge>{current.status === 'active' && !ended && <PrimaryButton variant="danger" testId="button-end-session" onClick={closeSession} disabled={end.isPending}><DoorOpen size={15} /> {end.isPending ? 'Ending…' : 'End session'}</PrimaryButton>}</div>} />
-    <div className="grid gap-6 lg:grid-cols-[.72fr_1.28fr]"><section className="rounded-2xl border border-border bg-sidebar p-6 text-sidebar-foreground shadow-xl"><div className="flex items-center justify-between"><div><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-sidebar-primary">Room token</div><div className="mt-1 text-sm text-sidebar-foreground/65">Students scan this code to check in</div></div><ShieldCheck size={19} className="text-sidebar-primary" /></div><div className="mx-auto mt-8 flex aspect-square max-w-[270px] items-center justify-center rounded-3xl bg-[#fbfaf6] p-5"><QrVisual token={current.token} /></div><div className="mt-6 text-center"><div className="font-mono-ui text-[10px] uppercase tracking-[.14em] text-sidebar-foreground/50">Rotating token</div><div className="mt-2 font-mono-ui text-xl tracking-[.2em] text-sidebar-primary">{current.token || '••••••••'}</div></div><div className="mt-6 flex items-center justify-between border-t border-sidebar-border pt-4 text-xs text-sidebar-foreground/60"><span>Expires {formatTime(current.endsAt)}</span><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-sidebar-primary" />Secure verification</span></div></section>
+    <div className="grid gap-6 lg:grid-cols-[.72fr_1.28fr]"><section className="rounded-2xl border border-border bg-sidebar p-6 text-sidebar-foreground shadow-xl"><div className="flex items-center justify-between"><div><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-sidebar-primary">Active session QR</div><div className="mt-1 text-sm text-sidebar-foreground/65">Students scan this code to check in</div></div><ShieldCheck size={19} className="text-sidebar-primary" /></div><div className="mx-auto mt-8 flex aspect-square max-w-[270px] items-center justify-center rounded-3xl bg-[#fbfaf6] p-5"><QrVisual token={current.token} /></div><div className="mt-6 text-center"><div className="font-mono-ui text-[10px] uppercase tracking-[.14em] text-sidebar-foreground/50">Time-limited token</div><div className="mt-2 break-all font-mono-ui text-sm tracking-[.12em] text-sidebar-primary">{current.token || 'Unavailable'}</div></div><div className="mt-6 flex items-center justify-between border-t border-sidebar-border pt-4 text-xs text-sidebar-foreground/60"><span>Expires {formatTime(current.endsAt)}</span><span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-sidebar-primary" />Secure verification</span></div></section>
       <section className="rounded-2xl border border-border bg-card"><div className="flex flex-col justify-between gap-4 border-b border-border p-5 sm:flex-row sm:items-center sm:p-6"><div><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Scan activity</div><h2 className="mt-1 font-display text-2xl">{current.scanCount} <span className="text-base font-normal text-muted-foreground">of {current.totalStudents} checked in</span></h2></div><div className="w-full sm:w-40"><div className="mb-2 flex justify-between text-[11px] text-muted-foreground"><span>Attendance</span><span className="font-bold text-primary">{current.attendanceRate}%</span></div><ProgressBar value={current.attendanceRate} /></div></div><div className="border-b border-border bg-muted/35 px-5 py-4"><div className="flex items-center gap-2 text-xs font-semibold"><ScanLine size={15} className="text-primary" /> Manual scan validation</div><div className="mt-3 flex flex-col gap-2 sm:flex-row"><input value={studentId} onChange={e => setStudentId(e.target.value)} data-testid="input-scan-student-id" placeholder="Student ID" className="min-w-0 flex-1 rounded-lg border border-input bg-card px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-primary/30" /><input value={token} onChange={e => setToken(e.target.value)} data-testid="input-scan-token" placeholder="QR token" className="min-w-0 flex-1 rounded-lg border border-input bg-card px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-primary/30" /><PrimaryButton testId="button-validate-scan" onClick={submitScan} disabled={scan.isPending || !studentId || !token}>{scan.isPending ? 'Checking…' : <><Check size={14} /> Validate</>}</PrimaryButton></div>{scan.isError && <div className="mt-2 text-xs text-destructive">This scan was rejected. Check the student ID and token.</div>}{scan.isSuccess && <div className="mt-2 text-xs text-emerald-700">Presence verified and added to the room.</div>}</div><div className="max-h-[355px] overflow-auto">{attendanceLoading ? [1,2,3,4].map(i => <div className="flex gap-3 border-b border-border p-4" key={i}><Skeleton className="h-8 w-8" /><Skeleton className="h-8 flex-1" /></div>) : records.length ? records.map((record: AnyRecord) => <div key={record.id} className="flex items-center gap-3 border-b border-border px-5 py-4 last:border-0"><div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">{initials(record.studentName)}</div><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{record.studentName}</div><div className="font-mono-ui text-[10px] text-muted-foreground">{record.matricNumber}</div></div><div className="text-right"><Badge tone={record.status === 'present' ? 'good' : record.status === 'late' ? 'warn' : 'danger'}>{record.status}</Badge><div className="mt-1 text-[10px] text-muted-foreground">{formatTime(record.scannedAt)}</div></div></div>) : <EmptyState icon={ScanLine} title="Waiting for the first scan" body="Student check-ins will appear here in real time." />}</div></section></div></>;
 }
 
 function CoursesPage() {
-  const { data: courses, isLoading, isError, refetch } = useListCourses(); const list = (courses as AnyRecord[] | undefined) || []; const [start, setStart] = useState<AnyRecord | null>(null); const [query, setQuery] = useState('');
-  const filtered = list.filter(c => `${c.code} ${c.title}`.toLowerCase().includes(query.toLowerCase()));
-  return <><PageHeading eyebrow="Course management" title="Your teaching desk." body="A focused view of every course, its pulse, and the next attendance moment." action={<PrimaryButton testId="button-add-course" onClick={() => alert('Course creation is available through the academic office.')}> <BookOpen size={16} /> Add course</PrimaryButton>} /><div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5 sm:w-80"><Search size={16} className="text-muted-foreground" /><input value={query} onChange={e => setQuery(e.target.value)} data-testid="input-course-search" placeholder="Search courses" className="w-full bg-transparent text-sm outline-none" /></div><div className="text-xs text-muted-foreground">{list.length} courses assigned</div></div>{isError ? <EmptyState icon={CircleAlert} title="Courses couldn't load" body="Try the request again, then continue your lecture day." action={<PrimaryButton testId="button-retry-courses" onClick={() => refetch()}><RefreshCw size={15} /> Retry</PrimaryButton>} /> : isLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{[1,2,3].map(i => <Skeleton key={i} className="h-64" />)}</div> : filtered.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{filtered.map(course => <div key={course.id} className="rounded-2xl border border-border bg-card p-5 transition-all hover:-translate-y-0.5 hover:border-primary/40"><div className="flex items-start justify-between"><div className="flex h-11 w-11 items-center justify-center rounded-xl text-xs font-bold" style={{ background: `${course.color || '#2f998b'}20`, color: course.color || '#2f998b' }}>{course.code?.slice(0, 2)}</div>{course.activeSessionId ? <Badge tone="live">In session</Badge> : <Badge>{course.department}</Badge>}</div><div className="mt-6 font-mono-ui text-xs font-semibold text-primary">{course.code}</div><h2 className="mt-1 min-h-12 font-display text-2xl leading-tight">{course.title}</h2><div className="mt-5 flex items-end justify-between"><div><div className="text-2xl font-bold">{course.attendanceRate}%</div><div className="text-[11px] text-muted-foreground">attendance rate</div></div><div className="text-right text-xs text-muted-foreground"><div className="font-semibold text-foreground">{course.studentsEnrolled}</div>students</div></div><ProgressBar value={course.attendanceRate} /><div className="mt-5 flex gap-2">{course.activeSessionId ? <Link href={`/sessions/${course.activeSessionId}`} data-testid={`link-course-session-${course.id}`} className="flex-1 rounded-lg bg-primary/10 px-3 py-2 text-center text-xs font-bold text-primary">Open live room</Link> : <button onClick={() => setStart(course)} data-testid={`button-course-start-${course.id}`} className="flex-1 rounded-lg border border-border px-3 py-2 text-xs font-bold hover:border-primary hover:text-primary">Start session</button>}<button onClick={() => alert(`Course details for ${course.code}`)} data-testid={`button-course-menu-${course.id}`} className="rounded-lg border border-border px-3 py-2 text-muted-foreground hover:bg-muted"><MoreHorizontal size={15} /></button></div></div>)}</div> : <EmptyState icon={BookOpen} title="No courses match" body="Try a different code or title." />}{start && <StartSessionDialog courseId={start.id} courseCode={start.code} courseTitle={start.title} onClose={() => setStart(null)} />}</>;
+  const { data: courses, isLoading, isError, refetch } = useListCourses();
+  const { data: user } = useGetCurrentUser();
+  const current = user as AnyRecord | undefined;
+  const list = (courses as AnyRecord[] | undefined) || [];
+  const [start, setStart] = useState<AnyRecord | null>(null);
+  const [editing, setEditing] = useState<AnyRecord | null | undefined>(undefined);
+  const [query, setQuery] = useState('');
+  const [actionError, setActionError] = useState('');
+  const deleteCourse = useDeleteCourse();
+  const client = useQueryClient();
+  const canCreate = current?.role === 'admin' || current?.role === 'lecturer';
+  const filtered = list.filter(course => `${course.code} ${course.title}`.toLowerCase().includes(query.toLowerCase()));
+  const canManage = (course: AnyRecord) => current?.role === 'admin' || (current?.role === 'lecturer' && current.id === course.lecturerId);
+  const removeCourse = (course: AnyRecord) => {
+    if (!window.confirm(`Delete ${course.code}? Courses with session history cannot be deleted.`)) return;
+    setActionError('');
+    deleteCourse.mutate({ courseId: course.id }, {
+      onSuccess: () => {
+        void client.invalidateQueries({ queryKey: getListCoursesQueryKey() });
+        void client.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
+      },
+      onError: () => setActionError('Course could not be deleted. It may already have session history.'),
+    });
+  };
+
+  return <>
+    <PageHeading eyebrow="Course management" title="Your teaching desk." body="Create and maintain courses, then start time-limited attendance sessions." action={canCreate ? <PrimaryButton testId="button-add-course" onClick={() => setEditing(null)}><BookOpen size={16} /> Add course</PrimaryButton> : undefined} />
+    <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5 sm:w-80"><Search size={16} className="text-muted-foreground" /><input value={query} onChange={e => setQuery(e.target.value)} data-testid="input-course-search" placeholder="Search courses" className="w-full bg-transparent text-sm outline-none" /></div>
+      <div className="text-xs text-muted-foreground">{list.length} courses</div>
+    </div>
+    {actionError && <div role="alert" className="mb-4 rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{actionError}</div>}
+    {isError ? <EmptyState icon={CircleAlert} title="Courses couldn't load" body="Try the request again, then continue your lecture day." action={<PrimaryButton testId="button-retry-courses" onClick={() => refetch()}><RefreshCw size={15} /> Retry</PrimaryButton>} />
+      : isLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{[1, 2, 3].map(i => <Skeleton key={i} className="h-64" />)}</div>
+        : filtered.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{filtered.map(course => {
+          const manage = canManage(course);
+          return <div key={course.id} className="rounded-2xl border border-border bg-card p-5 transition-all hover:-translate-y-0.5 hover:border-primary/40">
+            <div className="flex items-start justify-between"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-xs font-bold text-primary">{course.code?.slice(0, 2)}</div>{course.activeSessionId ? <Badge tone="live">In session</Badge> : <Badge>{course.department}</Badge>}</div>
+            <div className="mt-6 font-mono-ui text-xs font-semibold text-primary">{course.code}</div><h2 className="mt-1 min-h-12 font-display text-2xl leading-tight">{course.title}</h2>
+            <div className="mt-5 flex items-end justify-between"><div><div className="text-2xl font-bold">{course.attendanceRate}%</div><div className="text-[11px] text-muted-foreground">attendance rate</div></div><div className="text-right text-xs text-muted-foreground"><div className="font-semibold text-foreground">{course.studentsEnrolled}</div>students</div></div>
+            <ProgressBar value={course.attendanceRate} />
+            <div className="mt-5 flex gap-2">
+              {course.activeSessionId ? <Link href={`/sessions/${course.activeSessionId}`} data-testid={`link-course-session-${course.id}`} className="flex-1 rounded-lg bg-primary/10 px-3 py-2 text-center text-xs font-bold text-primary">Open live room</Link>
+                : manage ? <button onClick={() => setStart(course)} data-testid={`button-course-start-${course.id}`} className="flex-1 rounded-lg border border-border px-3 py-2 text-xs font-bold hover:border-primary hover:text-primary">Start session</button>
+                  : <span className="flex-1 rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">Course information</span>}
+              {manage && <><button onClick={() => setEditing(course)} aria-label={`Edit ${course.code}`} data-testid={`button-course-edit-${course.id}`} className="rounded-lg border border-border px-3 py-2 text-muted-foreground hover:bg-muted"><Pencil size={15} /></button><button onClick={() => removeCourse(course)} aria-label={`Delete ${course.code}`} data-testid={`button-course-delete-${course.id}`} disabled={deleteCourse.isPending || Boolean(course.activeSessionId)} className="rounded-lg border border-border px-3 py-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"><Trash2 size={15} /></button></>}
+            </div>
+          </div>;
+        })}</div> : <EmptyState icon={BookOpen} title="No courses match" body="Try a different code or title." />}
+    {start && <StartSessionDialog courseId={start.id} courseCode={start.code} courseTitle={start.title} onClose={() => setStart(null)} />}
+    {editing !== undefined && <CourseEditorDialog key={editing?.id || 'new-course'} course={editing} onClose={() => setEditing(undefined)} />}
+  </>;
+}
+
+function CourseEditorDialog({ course, onClose }: { course: AnyRecord | null; onClose: () => void }) {
+  const [error, setError] = useState('');
+  const create = useCreateCourse();
+  const update = useUpdateCourse();
+  const client = useQueryClient();
+  const pending = create.isPending || update.isPending;
+  const courseColor = course?.color;
+  const defaultColor = ['teal', 'amber', 'violet', 'blue'].includes(courseColor) ? courseColor : 'teal';
+  const form = useForm<CourseFormValues>({
+    resolver: zodResolver(courseFormSchema),
+    mode: 'onChange',
+    defaultValues: {
+      code: course?.code ?? '',
+      title: course?.title ?? '',
+      department: course?.department ?? 'Computer Science',
+      color: defaultColor,
+    },
+  });
+
+  const submit = (values: CourseFormValues) => {
+    setError('');
+    const data = { ...values, code: values.code.trim().toUpperCase(), title: values.title.trim(), department: values.department.trim() };
+    const onSuccess = () => {
+      void client.invalidateQueries({ queryKey: getListCoursesQueryKey() });
+      void client.invalidateQueries({ queryKey: getGetDashboardSummaryQueryKey() });
+      onClose();
+    };
+    const onError = () => setError('Could not save this course. Check the course code and try again.');
+    if (course) update.mutate({ courseId: course.id, data }, { onSuccess, onError });
+    else create.mutate({ data }, { onSuccess, onError });
+  };
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/35 p-4 backdrop-blur-sm">
+    <section role="dialog" aria-modal="true" aria-labelledby="course-dialog-title" className="w-full max-w-lg rounded-3xl border border-border bg-card p-6 shadow-2xl">
+      <div className="flex items-start justify-between">
+        <div><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-primary">Course details</div><h2 id="course-dialog-title" className="mt-1 font-display text-2xl">{course ? 'Edit course' : 'Add a course'}</h2></div>
+        <button onClick={onClose} aria-label="Close course form" className="rounded-lg p-2 text-muted-foreground hover:bg-muted"><X size={18} /></button>
+      </div>
+      <Form {...form}>
+        <form className="mt-6 space-y-4" onSubmit={form.handleSubmit(submit)}>
+          <FormField control={form.control} name="code" render={({ field }) => <FormItem><FormLabel>Course code</FormLabel><FormControl><Input {...field} placeholder="CSC 401" maxLength={24} data-testid="input-course-code" /></FormControl><FormMessage /></FormItem>} />
+          <FormField control={form.control} name="title" render={({ field }) => <FormItem><FormLabel>Course title</FormLabel><FormControl><Input {...field} placeholder="Software Engineering" maxLength={120} data-testid="input-course-title" /></FormControl><FormMessage /></FormItem>} />
+          <FormField control={form.control} name="department" render={({ field }) => <FormItem><FormLabel>Department</FormLabel><FormControl><Input {...field} placeholder="Computer Science" maxLength={120} data-testid="input-course-department" /></FormControl><FormMessage /></FormItem>} />
+          <FormField control={form.control} name="color" render={({ field }) => <FormItem><FormLabel>Course color</FormLabel><FormControl><select {...field} data-testid="select-course-color" className="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm outline-none"><option value="teal">Teal</option><option value="amber">Amber</option><option value="violet">Violet</option><option value="blue">Blue</option></select></FormControl><FormMessage /></FormItem>} />
+        {error && <div role="alert" className="rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
+          <div className="flex justify-end gap-2 pt-2"><PrimaryButton variant="quiet" testId="button-cancel-course" onClick={onClose}>Cancel</PrimaryButton><PrimaryButton type="submit" testId="button-save-course" disabled={pending || !form.formState.isValid}>{pending ? 'Saving…' : course ? 'Save course' : 'Create course'}</PrimaryButton></div>
+        </form>
+      </Form>
+    </section>
+  </div>;
 }
 
 function ReportsPage() {
@@ -183,20 +374,351 @@ function ReportsPage() {
   return <><PageHeading eyebrow="Attendance intelligence" title="Reports that hold up." body="Compare the signal across courses and time, then export a clean record for your department." action={<PrimaryButton variant="quiet" testId="button-export-report" onClick={exportReport}><Download size={16} /> Export CSV</PrimaryButton>} /><div className="mb-6 flex flex-col gap-3 rounded-2xl border border-border bg-card p-4 sm:flex-row sm:items-center"><div className="flex rounded-xl bg-muted p-1">{(['week','month','semester'] as const).map(option => <button key={option} onClick={() => setRange(option)} data-testid={`button-range-${option}`} className={cx('rounded-lg px-3 py-2 text-xs font-bold capitalize', range === option ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground')}>{option}</button>)}</div><select value={courseId} onChange={e => setCourseId(e.target.value)} data-testid="select-report-course" className="rounded-xl border border-input bg-background px-3 py-2.5 text-sm outline-none sm:ml-auto sm:min-w-52"><option value="">All courses</option>{courseList.map(c => <option key={c.id} value={c.id}>{c.code} — {c.title}</option>)}</select></div>{isError ? <EmptyState icon={CircleAlert} title="Report unavailable" body="We couldn't assemble this report right now." action={<PrimaryButton testId="button-retry-report" onClick={() => refetch()}><RefreshCw size={15} /> Retry</PrimaryButton>} /> : isLoading ? <div className="rounded-2xl border border-border bg-card p-6"><Skeleton className="h-10 w-full" /><Skeleton className="mt-4 h-10 w-full" /><Skeleton className="mt-4 h-10 w-full" /></div> : reports.length ? <div className="overflow-hidden rounded-2xl border border-border bg-card"><div className="hidden grid-cols-[1.5fr_.7fr_.7fr_.7fr_.8fr] gap-4 border-b border-border bg-muted/40 px-6 py-3 text-[10px] font-bold uppercase tracking-[.15em] text-muted-foreground sm:grid"><span>Course</span><span>Present</span><span>Absent</span><span>Sessions</span><span>Rate</span></div>{reports.map((report: AnyRecord) => <div key={report.courseId} className="grid gap-3 border-b border-border px-5 py-4 last:border-0 sm:grid-cols-[1.5fr_.7fr_.7fr_.7fr_.8fr] sm:items-center sm:gap-4 sm:px-6"><div><div className="font-mono-ui text-[11px] font-semibold text-primary">{report.courseCode}</div><div className="text-sm font-semibold">{report.courseTitle}</div></div><div><span className="text-xs text-muted-foreground sm:hidden">Present · </span><span className="text-sm font-semibold">{report.present}</span></div><div><span className="text-xs text-muted-foreground sm:hidden">Absent · </span><span className="text-sm font-semibold">{report.absent}</span></div><div><span className="text-xs text-muted-foreground sm:hidden">Sessions · </span><span className="text-sm font-semibold">{report.totalSessions}</span></div><div className="flex items-center gap-2"><span className="text-sm font-bold text-primary">{report.attendanceRate}%</span><div className="hidden w-16 sm:block"><ProgressBar value={report.attendanceRate} /></div></div></div>)}</div> : <EmptyState icon={BarChart3} title="No attendance data yet" body="Complete a session to begin building your report history." />}</>;
 }
 
-function QrVisual({ token }: { token?: string }) { return <div className="grid h-full w-full grid-cols-9 grid-rows-9 gap-1">{Array.from({ length: 81 }).map((_, i) => { const corner = (i < 27 && i % 9 < 3) || (i < 27 && i % 9 > 5) || (i > 53 && i % 9 < 3); const filled = corner ? (i % 9 === 1 || Math.floor(i / 9) % 3 === 1 || i % 9 === 0 || i % 9 === 8) : ((i * 7 + (token?.length || 3) * 11) % 5 < 2); return <span key={i} className={filled ? 'rounded-[2px] bg-[#162a30]' : 'rounded-[2px] bg-transparent'} />; })}</div>; }
+function AdminUsersPage() {
+  const { data: user } = useGetCurrentUser();
+  const current = user as AnyRecord | undefined;
+  const { data: users, isLoading, isError, refetch } = useListUsers({
+    query: { queryKey: getListUsersQueryKey(), refetchInterval: 30_000 },
+  });
+  const updateRole = useUpdateUserRole();
+  const client = useQueryClient();
+  const [error, setError] = useState('');
+  const people = (users as AnyRecord[] | undefined) || [];
+
+  const changeRole = (userId: string, role: UserRoleInputRole) => {
+    setError('');
+    updateRole.mutate(
+      { userId, data: { role } },
+      {
+        onSuccess: () => {
+          void client.invalidateQueries({ queryKey: getListUsersQueryKey() });
+        },
+        onError: () => setError('Could not update this role. Your own administrator role cannot be removed.'),
+      },
+    );
+  };
+
+  if (current?.role !== 'admin') {
+    return <EmptyState icon={Shield} title="Administrator access required" body="Only an administrator can view and change account roles." />;
+  }
+
+  return <>
+    <PageHeading eyebrow="Access management" title="Users and roles." body="Assign lecturer access to verified accounts. New accounts start with student permissions." />
+    {error && <div role="alert" className="mb-4 rounded-xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
+    {isError ? <EmptyState icon={CircleAlert} title="User list unavailable" body="The administrator user list could not be loaded." action={<PrimaryButton testId="button-retry-users" onClick={() => refetch()}><RefreshCw size={15} /> Retry</PrimaryButton>} />
+      : isLoading ? <div className="space-y-3">{[1, 2, 3].map(i => <Skeleton key={i} className="h-16" />)}</div>
+        : <section className="overflow-hidden rounded-2xl border border-border bg-card">
+          <div className="hidden grid-cols-[1.3fr_1.3fr_.8fr_.7fr] gap-4 border-b border-border bg-muted/40 px-5 py-3 text-[10px] font-bold uppercase tracking-[.15em] text-muted-foreground sm:grid"><span>Name</span><span>Email</span><span>Account</span><span>Role</span></div>
+          {people.length ? people.map(person => <div key={person.id} className="grid gap-3 border-b border-border px-5 py-4 last:border-0 sm:grid-cols-[1.3fr_1.3fr_.8fr_.7fr] sm:items-center sm:gap-4">
+            <div><div className="text-sm font-semibold">{person.name}</div><div className="font-mono-ui text-[10px] text-muted-foreground">{person.matricNumber || 'No matric number'}</div></div>
+            <div className="break-all text-xs text-muted-foreground">{person.email}</div>
+            <div className="text-xs capitalize text-muted-foreground">{person.department || '—'}</div>
+            <label className="text-xs font-semibold sm:sr-only" htmlFor={`role-${person.id}`}>Application role
+              <select id={`role-${person.id}`} value={person.role} disabled={updateRole.isPending || person.id === current.id} onChange={event => changeRole(person.id, event.target.value as UserRoleInputRole)} data-testid={`select-user-role-${person.id}`} className="mt-1 w-full rounded-lg border border-input bg-background px-2 py-2 text-xs capitalize disabled:opacity-60 sm:mt-0">
+                <option value="student">Student</option><option value="lecturer">Lecturer</option><option value="admin">Administrator</option>
+              </select>
+            </label>
+          </div>) : <div className="p-8"><EmptyState icon={UsersRound} title="No user accounts yet" body="Verified accounts will appear here after sign-up." /></div>}
+        </section>}
+  </>;
+}
+
+function QrVisual({ token }: { token?: string }) {
+  if (!token) return <div className="text-sm text-muted-foreground">QR unavailable</div>;
+  return <QRCodeSVG value={token} size={230} level="H" includeMargin />;
+}
+
+function AttendanceScanner({ onScan, onClose }: { onScan: (value: string) => void; onClose: () => void }) {
+  const onScanRef = useRef(onScan);
+  const [error, setError] = useState('');
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    onScanRef.current = onScan;
+  }, [onScan]);
+
+  useEffect(() => {
+    let mounted = true;
+    let scanner: Html5Qrcode | null = null;
+
+    const start = async () => {
+      try {
+        scanner = new Html5Qrcode('attendance-camera-view');
+        await scanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 230, height: 230 }, aspectRatio: 1 },
+          async (decoded) => {
+            if (!mounted) return;
+            const separator = decoded.indexOf('.');
+            if (separator <= 0 || separator === decoded.length - 1) {
+              setError('This is not an Attendly session QR code.');
+              return;
+            }
+            const activeScanner = scanner;
+            if (activeScanner?.isScanning) {
+              await activeScanner.stop().catch(() => undefined);
+            }
+            if (mounted) onScanRef.current(decoded);
+          },
+          () => undefined,
+        );
+        if (mounted) setReady(true);
+      } catch (cause) {
+        if (mounted) {
+          setError(cause instanceof Error ? cause.message : 'Camera access was not available.');
+        }
+      }
+    };
+
+    void start();
+    return () => {
+      mounted = false;
+      if (scanner?.isScanning) {
+        void scanner.stop().then(() => scanner?.clear()).catch(() => undefined);
+      } else {
+        scanner?.clear();
+      }
+    };
+  }, []);
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/45 p-4 backdrop-blur-sm">
+    <section role="dialog" aria-modal="true" aria-labelledby="scanner-title" className="w-full max-w-md rounded-3xl border border-border bg-card p-5 shadow-2xl">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-primary">Camera check-in</div>
+          <h2 id="scanner-title" className="mt-1 font-display text-2xl">Scan the class QR</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Point your camera at the lecturer’s active session code.</p>
+        </div>
+        <button onClick={onClose} aria-label="Close scanner" className="rounded-lg p-2 text-muted-foreground hover:bg-muted"><X size={18} /></button>
+      </div>
+      <div className="mt-5 overflow-hidden rounded-2xl bg-slate-950 p-2">
+        <div id="attendance-camera-view" className="min-h-[280px] w-full" />
+      </div>
+      <p aria-live="polite" className={cx('mt-3 text-sm', error ? 'text-destructive' : 'text-muted-foreground')}>
+        {error || (ready ? 'Camera is ready. Hold the QR code inside the frame.' : 'Requesting camera access…')}
+      </p>
+    </section>
+  </div>;
+}
 
 function StudentPage() {
-  const { data: user } = useGetCurrentUser(); const student = user as AnyRecord | undefined; const studentId = student?.id || 'student-001'; const { data, isLoading, isError, refetch } = useGetStudentAttendance(studentId, { query: { queryKey: getGetStudentAttendanceQueryKey(studentId) } }); const records = (data as AnyRecord[] | undefined) || [];
-  return <><PageHeading eyebrow="Student identity" title="Your presence, verified." body="Show this identity at the door. Every scan is tied to your student record and the room's live token." /><div className="grid gap-6 lg:grid-cols-[.72fr_1.28fr]"><section className="overflow-hidden rounded-3xl bg-sidebar p-6 text-sidebar-foreground shadow-xl sm:p-8"><div className="flex items-center justify-between"><div className="font-display text-xl">Attend<span className="text-sidebar-primary">ly</span></div><Badge tone="live">Verified identity</Badge></div><div className="mx-auto mt-10 flex aspect-square max-w-[240px] items-center justify-center rounded-3xl bg-[#fbfaf6] p-5"><QrVisual token={studentId} /></div><div className="mt-7 text-center"><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-sidebar-foreground/50">Student ID</div><div className="mt-2 font-mono-ui text-lg tracking-[.1em] text-sidebar-primary">{student?.matricNumber || '24/1042'}</div></div><div className="mt-7 border-t border-sidebar-border pt-5"><div className="text-lg font-semibold">{student?.name || 'Student account'}</div><div className="mt-1 text-xs text-sidebar-foreground/55">{student?.department || 'Department of Computer Science'}</div></div></section><section className="rounded-2xl border border-border bg-card"><div className="border-b border-border p-5 sm:p-6"><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Personal record</div><h2 className="mt-1 font-display text-2xl">Attendance history</h2></div>{isError ? <div className="p-6"><EmptyState icon={CircleAlert} title="History unavailable" body="We couldn't retrieve your record." action={<PrimaryButton testId="button-retry-student" onClick={() => refetch()}><RefreshCw size={15} /> Retry</PrimaryButton>} /></div> : isLoading ? <div className="p-6 space-y-3">{[1,2,3].map(i => <Skeleton className="h-14" key={i} />)}</div> : records.length ? <div>{records.map((record: AnyRecord) => <div key={record.id} className="flex items-center gap-3 border-b border-border px-5 py-4 last:border-0 sm:px-6"><div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><BookOpen size={16} /></div><div className="min-w-0 flex-1"><div className="font-mono-ui text-[11px] font-semibold text-primary">{record.courseCode}</div><div className="truncate text-sm font-semibold">{record.courseTitle || 'Attendance record'}</div><div className="text-[11px] text-muted-foreground">{formatDate(record.scannedAt)} · {formatTime(record.scannedAt)}</div></div><Badge tone={record.status === 'present' ? 'good' : record.status === 'late' ? 'warn' : 'danger'}>{record.status}</Badge></div>)}</div> : <div className="p-6"><EmptyState icon={CalendarDays} title="No scans recorded yet" body="Your attendance history will appear after your first verified check-in." /></div>}</section></div></>;
+  const { data: user } = useGetCurrentUser();
+  const student = user as AnyRecord | undefined;
+  const studentId = student?.id || '';
+  const { data, isLoading, isError, refetch } = useGetStudentAttendance(studentId, {
+    query: { queryKey: getGetStudentAttendanceQueryKey(studentId), enabled: Boolean(studentId) },
+  });
+  const records = (data as AnyRecord[] | undefined) || [];
+  const scan = useScanAttendance();
+  const client = useQueryClient();
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanMessage, setScanMessage] = useState('');
+
+  const handleScannedQr = (payload: string) => {
+    const separator = payload.indexOf('.');
+    if (separator <= 0 || separator === payload.length - 1) {
+      setScanMessage('This code is not a valid Attendly session QR.');
+      return;
+    }
+    setScanMessage('');
+    scan.mutate(
+      {
+        sessionId: payload.slice(0, separator),
+        data: { studentId, qrToken: payload },
+      },
+      {
+        onSuccess: () => {
+          setScannerOpen(false);
+          setScanMessage('Attendance recorded for this session.');
+          client.invalidateQueries({ queryKey: getGetStudentAttendanceQueryKey(studentId) });
+        },
+        onError: () => setScanMessage('The QR code is invalid, expired, or already used.'),
+      },
+    );
+  };
+
+  if (!student) return <EmptyState title="Loading your account" body="Your verified student profile is being loaded." />;
+  if (student.role !== 'student') {
+    return <EmptyState icon={Shield} title="Student view only" body="This page is available to student accounts. Your application role is managed by an administrator." />;
+  }
+
+  return <>
+    <PageHeading
+      eyebrow="Student attendance"
+      title="Your presence, verified."
+      body="Scan the lecturer’s active class QR code to record attendance against your signed-in account."
+      action={<PrimaryButton testId="button-open-attendance-scanner" onClick={() => { setScanMessage(''); setScannerOpen(true); }} disabled={scan.isPending}><Camera size={16} /> Scan class QR</PrimaryButton>}
+    />
+    {scanMessage && <div role="status" className={cx('mb-5 rounded-xl px-4 py-3 text-sm', scan.isError ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary')}>{scanMessage}</div>}
+    <div className="grid gap-6 lg:grid-cols-[.72fr_1.28fr]">
+      <section className="overflow-hidden rounded-3xl bg-sidebar p-6 text-sidebar-foreground shadow-xl sm:p-8">
+        <div className="flex items-center justify-between">
+          <div className="font-display text-xl">Attend<span className="text-sidebar-primary">ly</span></div>
+          <Badge tone="live">Signed in</Badge>
+        </div>
+        <div className="mx-auto mt-8 flex aspect-square max-w-[240px] flex-col items-center justify-center rounded-3xl border border-sidebar-border bg-sidebar-accent/60 p-6 text-center">
+          <div className="mb-4 rounded-2xl bg-sidebar-primary/15 p-4 text-sidebar-primary"><QrCode size={38} /></div>
+          <div className="font-semibold">Ready to check in</div>
+          <div className="mt-1 text-xs text-sidebar-foreground/60">Scan a time-limited code shown by your lecturer.</div>
+        </div>
+        <div className="mt-7 border-t border-sidebar-border pt-5">
+          <div className="text-lg font-semibold">{student.name}</div>
+          <div className="mt-1 text-xs text-sidebar-foreground/65">{student.matricNumber || student.email}</div>
+          <div className="mt-1 text-xs text-sidebar-foreground/55">{student.department}</div>
+        </div>
+      </section>
+      <section className="rounded-2xl border border-border bg-card">
+        <div className="border-b border-border p-5 sm:p-6">
+          <div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Personal record</div>
+          <h2 className="mt-1 font-display text-2xl">Attendance history</h2>
+        </div>
+        {isError ? <div className="p-6"><EmptyState icon={CircleAlert} title="History unavailable" body="We couldn't retrieve your record." action={<PrimaryButton testId="button-retry-student" onClick={() => refetch()}><RefreshCw size={15} /> Retry</PrimaryButton>} /></div>
+          : isLoading ? <div className="space-y-3 p-6">{[1, 2, 3].map(i => <Skeleton className="h-14" key={i} />)}</div>
+            : records.length ? <div>{records.map((record: AnyRecord) => <div key={record.id} className="flex items-center gap-3 border-b border-border px-5 py-4 last:border-0 sm:px-6"><div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><BookOpen size={16} /></div><div className="min-w-0 flex-1"><div className="font-mono-ui text-[11px] font-semibold text-primary">{record.courseCode}</div><div className="truncate text-sm font-semibold">{record.courseTitle || 'Attendance record'}</div><div className="text-[11px] text-muted-foreground">{formatDate(record.scannedAt)} · {formatTime(record.scannedAt)}</div></div><Badge tone={record.status === 'present' ? 'good' : record.status === 'late' ? 'warn' : 'danger'}>{record.status}</Badge></div>)}</div>
+              : <div className="p-6"><EmptyState icon={CalendarDays} title="No scans recorded yet" body="Your attendance history will appear after your first verified check-in." /></div>}
+      </section>
+    </div>
+    {scannerOpen && <AttendanceScanner onScan={handleScannedQr} onClose={() => setScannerOpen(false)} />}
+  </>;
 }
 
 function SettingsPage() {
-  const { data: user } = useGetCurrentUser(); const current = user as AnyRecord | undefined; const [role, setRole] = useState(current?.role || 'lecturer'); const [saved, setSaved] = useState(false); const [compact, setCompact] = useState(false);
-  return <><PageHeading eyebrow="Workspace settings" title="Set the desk up your way." body="Profile details and demo controls for this attendance workspace." /><div className="grid gap-6 lg:grid-cols-[.9fr_1.1fr]"><section className="rounded-2xl border border-border bg-card p-5 sm:p-6"><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Profile</div><div className="mt-6 flex items-center gap-4"><div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/12 text-lg font-bold text-primary">{current?.initials || 'AD'}</div><div><h2 className="font-display text-2xl">{current?.name || 'Academic desk'}</h2><p className="text-sm text-muted-foreground">{current?.email || 'lecturer@university.edu'}</p></div></div><div className="mt-7 space-y-4"><label className="block text-sm font-semibold">Full name<input value={current?.name || 'Academic desk'} readOnly data-testid="input-profile-name" className="mt-2 w-full rounded-xl border border-input bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground outline-none" /></label><label className="block text-sm font-semibold">Department<input value={current?.department || 'Academic affairs'} readOnly data-testid="input-profile-department" className="mt-2 w-full rounded-xl border border-input bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground outline-none" /></label><PrimaryButton testId="button-save-profile" onClick={() => { setSaved(true); setTimeout(() => setSaved(false), 2200); }}>{saved ? <><Check size={15} /> Saved</> : 'Save changes'}</PrimaryButton></div></section><div className="space-y-6"><section className="rounded-2xl border border-border bg-card p-5 sm:p-6"><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Demo role</div><h2 className="mt-1 font-display text-2xl">View as another desk</h2><p className="mt-1 text-sm text-muted-foreground">Switch the UI perspective for walkthroughs. Your API identity stays unchanged.</p><div className="mt-5 grid gap-2 sm:grid-cols-3">{['admin','lecturer','student'].map(option => <button key={option} onClick={() => setRole(option)} data-testid={`button-role-${option}`} className={cx('rounded-xl border px-3 py-3 text-left transition-colors', role === option ? 'border-primary bg-primary/8 text-primary' : 'border-border hover:bg-muted')}><div className="text-sm font-bold capitalize">{option}</div><div className="mt-1 text-[10px] text-muted-foreground">{option === 'student' ? 'Personal check-in' : option === 'admin' ? 'Full oversight' : 'Teaching desk'}</div></button>)}</div></section><section className="rounded-2xl border border-border bg-card p-5 sm:p-6"><div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Preferences</div><h2 className="mt-1 font-display text-2xl">System preferences</h2><div className="mt-5 divide-y divide-border"><PreferenceRow icon={Sparkles} title="Compact attendance view" body="Fit more scan activity on screen" value={compact} onChange={() => setCompact(!compact)} testId="switch-compact-view" /><PreferenceRow icon={ShieldCheck} title="Verification confirmations" body="Keep feedback visible after every scan" value={true} onChange={() => {}} testId="switch-confirmations" /></div></section></div></div></>;
+  const { data: user } = useGetCurrentUser();
+  const current = user as AnyRecord | undefined;
+  return <>
+    <PageHeading eyebrow="Workspace settings" title="Account settings." body="Your profile is synced from your verified sign-in account. Application access is controlled by your assigned role." />
+    <div className="grid gap-6 lg:grid-cols-[.9fr_1.1fr]">
+      <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
+        <div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Profile</div>
+        <div className="mt-6 flex items-center gap-4">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/12 text-lg font-bold text-primary">{current?.initials || 'AC'}</div>
+          <div><h2 className="font-display text-2xl">{current?.name || 'Your account'}</h2><p className="text-sm text-muted-foreground">{current?.email || ''}</p></div>
+        </div>
+        <div className="mt-7 space-y-4">
+          <label className="block text-sm font-semibold">Department<input value={current?.department || ''} readOnly data-testid="input-profile-department" className="mt-2 w-full rounded-xl border border-input bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground outline-none" /></label>
+          <label className="block text-sm font-semibold">Student number<input value={current?.matricNumber || 'Not provided'} readOnly data-testid="input-profile-matric-number" className="mt-2 w-full rounded-xl border border-input bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground outline-none" /></label>
+        </div>
+      </section>
+      <section className="rounded-2xl border border-border bg-card p-5 sm:p-6">
+        <div className="font-mono-ui text-[10px] uppercase tracking-[.18em] text-muted-foreground">Access and security</div>
+        <h2 className="mt-1 font-display text-2xl">Your application role</h2>
+        <div className="mt-5 flex items-center gap-3 rounded-xl bg-primary/5 p-4"><ShieldCheck className="text-primary" size={20} /><div><div className="text-sm font-semibold capitalize">{current?.role || 'Loading role'}</div><div className="mt-0.5 text-xs text-muted-foreground">Role changes are managed by an administrator.</div></div></div>
+        <p className="mt-5 text-sm leading-6 text-muted-foreground">Sign-in and email verification are handled by Clerk. Attendance scans are accepted only for your signed-in account and an active session code.</p>
+        {current?.role === 'admin' && <Link href="/admin" data-testid="link-settings-admin-users" className="mt-5 inline-flex items-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm font-semibold hover:bg-muted"><UsersRound size={16} /> Manage user roles</Link>}
+      </section>
+    </div>
+  </>;
 }
 function PreferenceRow({ icon: Icon, title, body, value, onChange, testId }: { icon: any; title: string; body: string; value: boolean; onChange: () => void; testId: string }) { return <div className="flex items-center gap-3 py-4"><div className="rounded-lg bg-primary/10 p-2 text-primary"><Icon size={16} /></div><div className="flex-1"><div className="text-sm font-semibold">{title}</div><div className="text-xs text-muted-foreground">{body}</div></div><button role="switch" aria-checked={value} onClick={onChange} data-testid={testId} className={cx('relative h-6 w-11 rounded-full p-1 transition-colors', value ? 'bg-primary' : 'bg-muted')}><span className={cx('block h-4 w-4 rounded-full bg-card transition-transform', value ? 'translate-x-5' : 'translate-x-0')} /></button></div>; }
 
-function Router() { return <RoutedErrorBoundary><AppShell><Switch><Route path="/" component={Dashboard} /><Route path="/sessions" component={SessionsPage} /><Route path="/sessions/:sessionId" component={SessionDetail} /><Route path="/courses" component={CoursesPage} /><Route path="/reports" component={ReportsPage} /><Route path="/student" component={StudentPage} /><Route path="/settings" component={SettingsPage} /><Route component={NotFound} /></Switch></AppShell></RoutedErrorBoundary>; }
+function PublicLandingPage() {
+  return <main className="min-h-[100dvh] bg-background text-foreground">
+    <header className="mx-auto flex max-w-7xl items-center justify-between px-5 py-6 sm:px-8">
+      <div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sidebar text-sidebar-primary"><ScanLine size={20} /></div><div><div className="font-display text-xl font-bold">Attend<span className="text-primary">ly</span></div><div className="font-mono-ui text-[9px] uppercase tracking-[.2em] text-muted-foreground">presence, verified</div></div></div>
+      <div className="flex items-center gap-2"><Link href="/sign-in" data-testid="link-landing-sign-in" className="rounded-xl px-4 py-2.5 text-sm font-semibold text-foreground hover:bg-muted">Sign in</Link><Link href="/sign-up" data-testid="link-landing-sign-up" className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm hover:brightness-95">Create account</Link></div>
+    </header>
+    <section className="mx-auto grid max-w-7xl items-center gap-12 px-5 pb-20 pt-10 sm:px-8 lg:grid-cols-[1.05fr_.95fr] lg:py-24">
+      <div><div className="mb-5 inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 font-mono-ui text-[10px] uppercase tracking-[.16em] text-primary"><ShieldCheck size={13} /> Verified attendance</div>
+        <h1 className="max-w-3xl font-display text-5xl font-bold leading-[1.05] tracking-[-.04em] sm:text-6xl">A clearer record of who’s in the room.</h1>
+        <p className="mt-6 max-w-xl text-base leading-7 text-muted-foreground">Attendly gives students a fast QR check-in and gives lecturers a live, time-limited attendance record for each class session.</p>
+        <div className="mt-8 flex flex-wrap gap-3"><Link href="/sign-up" data-testid="button-landing-create-account" className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-sm hover:brightness-95">Create your account <ChevronRight size={16} /></Link><Link href="/sign-in" data-testid="button-landing-sign-in" className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-5 py-3 text-sm font-semibold hover:bg-muted">Sign in to Attendly</Link></div>
+        <p className="mt-5 text-xs text-muted-foreground">New accounts begin with student access. An administrator assigns lecturer or administrator roles.</p>
+      </div>
+      <div className="relative mx-auto w-full max-w-lg">
+        <div className="absolute -inset-5 rounded-[2rem] bg-primary/10 blur-2xl" />
+        <div className="relative rounded-3xl border border-border bg-card p-5 shadow-xl sm:p-7">
+          <div className="flex items-center justify-between border-b border-border pb-4"><div><div className="font-mono-ui text-[10px] uppercase tracking-[.16em] text-muted-foreground">How it works</div><div className="mt-1 font-display text-2xl">A simple class check-in</div></div><span className="rounded-xl bg-primary/10 p-3 text-primary"><QrCode size={22} /></span></div>
+          <div className="mt-5 space-y-4">
+            {[['01', 'Lecturer opens a session', 'A unique QR code expires with the class window.'], ['02', 'Student scans the code', 'The camera check-in uses the signed-in student account.'], ['03', 'Attendance is recorded', 'Duplicate and expired check-ins are rejected.']].map(([number, title, body]) => <div key={number} className="flex gap-4 rounded-2xl border border-border/70 p-4"><div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 font-mono-ui text-xs font-bold text-primary">{number}</div><div><div className="text-sm font-semibold">{title}</div><div className="mt-1 text-xs leading-5 text-muted-foreground">{body}</div></div></div>)}
+          </div>
+          <div className="mt-5 flex items-center gap-2 rounded-xl bg-sidebar px-4 py-3 text-xs text-sidebar-foreground"><ShieldCheck size={16} className="text-sidebar-primary" /> Verified sign-in · role-based access · expiring session codes</div>
+        </div>
+      </div>
+    </section>
+  </main>;
+}
+
+function SignInPage() {
+  return <div className="flex min-h-[100dvh] items-center justify-center bg-background px-4 py-10"><SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} /></div>;
+}
+
+function SignUpPage() {
+  return <div className="flex min-h-[100dvh] items-center justify-center bg-background px-4 py-10"><SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} /></div>;
+}
+
+function HomeRoute() {
+  const { isLoaded, isSignedIn } = useAuth();
+  const { data, isLoading, isError } = useGetCurrentUser({ query: { queryKey: getGetCurrentUserQueryKey(), enabled: Boolean(isSignedIn) } });
+  const current = data as AnyRecord | undefined;
+  if (!isLoaded) return <div className="flex min-h-[100dvh] items-center justify-center bg-background text-sm text-muted-foreground">Loading secure sign-in…</div>;
+  if (!isSignedIn) return <PublicLandingPage />;
+  if (isLoading) return <div className="flex min-h-[100dvh] items-center justify-center bg-background text-sm text-muted-foreground">Loading your attendance workspace…</div>;
+  if (isError || !current) return <main className="mx-auto flex min-h-[100dvh] max-w-xl items-center px-5"><EmptyState icon={CircleAlert} title="Account setup is incomplete" body="Your verified account could not be connected to an attendance profile. Please contact your system administrator." /></main>;
+  return <AppShell>{current.role === 'student' ? <StudentPage /> : <Dashboard />}</AppShell>;
+}
+
+function WorkspaceRoutes() {
+  const { isLoaded, isSignedIn } = useAuth();
+  if (!isLoaded) return <div className="flex min-h-[100dvh] items-center justify-center bg-background text-sm text-muted-foreground">Loading secure sign-in…</div>;
+  if (!isSignedIn) return <Redirect to="/" />;
+  return <RoutedErrorBoundary><AppShell><Switch>
+    <Route path="/sessions" component={SessionsPage} />
+    <Route path="/sessions/:sessionId" component={SessionDetail} />
+    <Route path="/courses" component={CoursesPage} />
+    <Route path="/reports" component={ReportsPage} />
+    <Route path="/student" component={StudentPage} />
+    <Route path="/settings" component={SettingsPage} />
+    <Route path="/admin" component={AdminUsersPage} />
+    <Route component={NotFound} />
+  </Switch></AppShell></RoutedErrorBoundary>;
+}
+
+function ClerkQueryClientCacheInvalidator() {
+  const { addListener } = useClerk();
+  const client = useQueryClient();
+  const previousUserId = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const unsubscribe = addListener(({ user }) => {
+      const currentId = user?.id ?? null;
+      if (previousUserId.current !== undefined && previousUserId.current !== currentId) client.clear();
+      previousUserId.current = currentId;
+    });
+    return unsubscribe;
+  }, [addListener, client]);
+  return null;
+}
+
 function RoutedErrorBoundary({ children }: { children: ReactNode }) { const [location] = useLocation(); return <ErrorBoundary resetKey={location}>{children}</ErrorBoundary>; }
-function App() { return <QueryClientProvider client={queryClient}><TooltipProvider><WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}><Router /></WouterRouter><Toaster /></TooltipProvider></QueryClientProvider>; }
+
+function ClerkProviderWithRoutes() {
+  const [, setLocation] = useLocation();
+  return <ClerkProvider
+    publishableKey={clerkPubKey}
+    proxyUrl={clerkProxyUrl}
+    appearance={clerkAppearance}
+    signInUrl={`${basePath}/sign-in`}
+    signUpUrl={`${basePath}/sign-up`}
+    localization={{
+      signIn: { start: { title: 'Welcome back', subtitle: 'Sign in to access your attendance workspace.' } },
+      signUp: { start: { title: 'Create your account', subtitle: 'Get started with verified class attendance.' } },
+    }}
+    routerPush={path => setLocation(stripBase(path))}
+    routerReplace={path => setLocation(stripBase(path), { replace: true })}
+  >
+    <QueryClientProvider client={queryClient}>
+      <ClerkQueryClientCacheInvalidator />
+      <TooltipProvider>
+        <Switch>
+          <Route path="/sign-in/*?" component={SignInPage} />
+          <Route path="/sign-up/*?" component={SignUpPage} />
+          <Route path="/" component={HomeRoute} />
+          <Route component={WorkspaceRoutes} />
+        </Switch>
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>
+  </ClerkProvider>;
+}
+
+function App() { return <WouterRouter base={basePath}><ClerkProviderWithRoutes /></WouterRouter>; }
 export default App;

@@ -33,6 +33,19 @@ export interface User {
   department: string;
 }
 
+export type UserRoleInputRole = typeof UserRoleInputRole[keyof typeof UserRoleInputRole];
+
+
+export const UserRoleInputRole = {
+  admin: 'admin',
+  lecturer: 'lecturer',
+  student: 'student',
+} as const;
+
+export interface UserRoleInput {
+  role: UserRoleInputRole;
+}
+
 export interface Course {
   id: string;
   code: string;
@@ -56,6 +69,16 @@ export interface CourseInput {
   title: string;
   /** @minLength 2 */
   department: string;
+  color?: string;
+}
+
+export interface CourseUpdate {
+  /** @minLength 2 */
+  code?: string;
+  /** @minLength 2 */
+  title?: string;
+  /** @minLength 2 */
+  department?: string;
   color?: string;
 }
 

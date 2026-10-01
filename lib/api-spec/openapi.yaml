@@ -48,6 +48,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
+  /admin/users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List workspace users for administrators
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+  /admin/users/{userId}/role:
+    patch:
+      operationId: updateUserRole
+      tags: [users]
+      summary: Change a user's application role
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserRoleInput"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
   /dashboard/summary:
     get:
       operationId: getDashboardSummary
@@ -109,6 +147,36 @@ paths:
                 $ref: "#/components/schemas/Course"
         "404":
           $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateCourse
+      tags: [courses]
+      summary: Update a course
+      parameters:
+        - $ref: "#/components/parameters/CourseIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CourseUpdate"
+      responses:
+        "200":
+          description: Updated course
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Course"
+    delete:
+      operationId: deleteCourse
+      tags: [courses]
+      summary: Delete a course without sessions
+      parameters:
+        - $ref: "#/components/parameters/CourseIdParam"
+      responses:
+        "204":
+          description: Deleted
+        "409":
+          description: Course has session history
   /courses/{courseId}/sessions:
     post:
       operationId: createSession
@@ -301,6 +369,13 @@ components:
         matricNumber: { type: ["string", "null"] }
         department: { type: string }
       required: [id, name, email, role, initials, matricNumber, department]
+    UserRoleInput:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [admin, lecturer, student]
+      required: [role]
     Course:
       type: object
       properties:
@@ -335,6 +410,13 @@ components:
         department: { type: string, minLength: 2 }
         color: { type: string }
       required: [code, title, department]
+    CourseUpdate:
+      type: object
+      properties:
+        code: { type: string, minLength: 2 }
+        title: { type: string, minLength: 2 }
+        department: { type: string, minLength: 2 }
+        color: { type: string }
     SessionInput:
       type: object
       properties:

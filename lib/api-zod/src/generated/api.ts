@@ -32,6 +32,43 @@ export const GetCurrentUserResponse = zod.object({
 
 
 /**
+ * @summary List workspace users for administrators
+ */
+export const ListUsersResponseItem = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.enum(['admin', 'lecturer', 'student']),
+  "initials": zod.string(),
+  "matricNumber": zod.string().nullable(),
+  "department": zod.string()
+})
+export const ListUsersResponse = zod.array(ListUsersResponseItem)
+
+
+/**
+ * @summary Change a user's application role
+ */
+export const UpdateUserRoleParams = zod.object({
+  "userId": zod.coerce.string()
+})
+
+export const UpdateUserRoleBody = zod.object({
+  "role": zod.enum(['admin', 'lecturer', 'student'])
+})
+
+export const UpdateUserRoleResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.enum(['admin', 'lecturer', 'student']),
+  "initials": zod.string(),
+  "matricNumber": zod.string().nullable(),
+  "department": zod.string()
+})
+
+
+/**
  * @summary Get dashboard overview metrics
  */
 export const GetDashboardSummaryResponse = zod.object({
@@ -130,6 +167,53 @@ export const GetCourseResponse = zod.object({
   "nextClass": zod.string().nullable(),
   "activeSessionId": zod.string().nullable()
 })
+
+
+/**
+ * @summary Update a course
+ */
+export const UpdateCourseParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const updateCourseBodyCodeMin = 2;
+
+export const updateCourseBodyTitleMin = 2;
+
+export const updateCourseBodyDepartmentMin = 2;
+
+
+
+export const UpdateCourseBody = zod.object({
+  "code": zod.string().min(updateCourseBodyCodeMin).optional(),
+  "title": zod.string().min(updateCourseBodyTitleMin).optional(),
+  "department": zod.string().min(updateCourseBodyDepartmentMin).optional(),
+  "color": zod.string().optional()
+})
+
+export const UpdateCourseResponse = zod.object({
+  "id": zod.string(),
+  "code": zod.string(),
+  "title": zod.string(),
+  "department": zod.string(),
+  "lecturerId": zod.string(),
+  "lecturerName": zod.string(),
+  "color": zod.string(),
+  "studentsEnrolled": zod.number().int(),
+  "attendanceRate": zod.number(),
+  "nextClass": zod.string().nullable(),
+  "activeSessionId": zod.string().nullable()
+})
+
+
+/**
+ * @summary Delete a course without sessions
+ */
+export const DeleteCourseParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const DeleteCourseResponse = zod.void()
 
 
 /**

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, gt, gte, inArray } from "drizzle-orm";
 import { Router, type IRouter, type Request, type Response } from "express";
+import { clerkClient, getAuth } from "@clerk/express";
 import {
   CreateCourseBody,
   CreateSessionBody,
@@ -14,6 +15,10 @@ import {
   ListSessionAttendanceParams,
   ScanAttendanceBody,
   ScanAttendanceParams,
+  UpdateCourseBody,
+  UpdateCourseParams,
+  UpdateUserRoleBody,
+  UpdateUserRoleParams,
 } from "@workspace/api-zod";
 import { db } from "@workspace/db";
 import {
@@ -24,6 +29,11 @@ import {
 } from "@workspace/db";
 
 const router: IRouter = Router();
+
+router.use((req, res, next) => {
+  if (!getAuth(req).userId) return res.status(401).json({ error: "Sign in is required" });
+  return next();
+});
 
 const lecturer = {
   id: "lecturer-01",
@@ -119,7 +129,9 @@ async function ensureSeeded() {
 
   if (existing.length > 0) return;
 
-  await db.insert(usersTable).values([lecturer, ...students]);
+  await db
+    .insert(usersTable)
+    .values([lecturer, ...students].map((user) => ({ ...user, isDemo: true })));
   await db.insert(coursesTable).values([...seedCourses]);
 
   const startsAt = new Date();
@@ -135,8 +147,120 @@ async function ensureSeeded() {
   });
 }
 
+async function getAppUser(req: Request) {
+  const clerkId = getAuth(req).userId;
+  if (!clerkId) return null;
+
+  const existing = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.clerkUserId, clerkId))
+    .limit(1);
+  if (existing[0]) return await assignConfiguredAdmin(existing[0]);
+
+  const identity = await clerkClient.users.getUser(clerkId);
+  const emailRecord =
+    identity.emailAddresses.find(
+      (email) => email.id === identity.primaryEmailAddressId,
+    ) ??
+    identity.emailAddresses.find(
+      (email) => email.verification?.status === "verified",
+    );
+  if (!emailRecord || emailRecord.verification?.status !== "verified") {
+    throw new Error("Verify an email address before using this attendance system.");
+  }
+
+  const normalizedEmail = emailRecord.emailAddress.toLowerCase();
+  const emailMatch = await db
+    .select()
+    .from(usersTable)
+    .where(and(eq(usersTable.email, normalizedEmail), eq(usersTable.isDemo, false)))
+    .limit(1);
+  if (emailMatch[0]) {
+    const [linked] = await db
+      .update(usersTable)
+      .set({ clerkUserId: clerkId })
+      .where(eq(usersTable.id, emailMatch[0].id))
+      .returning();
+    return await assignConfiguredAdmin(linked);
+  }
+
+  const demoEmailMatch = await db
+    .select({ id: usersTable.id })
+    .from(usersTable)
+    .where(and(eq(usersTable.email, normalizedEmail), eq(usersTable.isDemo, true)))
+    .limit(1);
+  if (demoEmailMatch[0]) {
+    throw new Error(
+      "This email belongs to a demonstration profile. Sign up with an email address you control.",
+    );
+  }
+
+  const name =
+    identity.fullName?.trim() ||
+    [identity.firstName, identity.lastName].filter(Boolean).join(" ") ||
+    normalizedEmail.split("@")[0] ||
+    "Student";
+  const [created] = await db
+    .insert(usersTable)
+    .values({
+      id: clerkId,
+      clerkUserId: clerkId,
+      name,
+      email: normalizedEmail,
+      role: "student",
+      initials: name
+        .split(/\s+/)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase() ?? "")
+        .join(""),
+      matricNumber: null,
+      department: "Computer Science",
+      isDemo: false,
+    })
+    .returning();
+  return await assignConfiguredAdmin(created);
+}
+
+async function assignConfiguredAdmin(user: typeof usersTable.$inferSelect) {
+  const adminEmail = process.env.ATTENDANCE_ADMIN_EMAIL?.trim().toLowerCase();
+  if (!adminEmail || user.isDemo || user.email.toLowerCase() !== adminEmail) {
+    return user;
+  }
+
+  const existingAdmin = await db
+    .select({ id: usersTable.id })
+    .from(usersTable)
+    .where(and(eq(usersTable.role, "admin"), eq(usersTable.isDemo, false)))
+    .limit(1);
+  if (existingAdmin[0]) return user;
+
+  const [promoted] = await db
+    .update(usersTable)
+    .set({ role: "admin" })
+    .where(eq(usersTable.id, user.id))
+    .returning();
+  return promoted ?? user;
+}
+
+function hasRole(user: typeof usersTable.$inferSelect, ...roles: string[]) {
+  return roles.includes(user.role);
+}
+
+function publicUser(user: typeof usersTable.$inferSelect) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    initials: user.initials,
+    matricNumber: user.matricNumber,
+    department: user.department,
+  };
+}
+
 async function getCourseSummary(course: typeof coursesTable.$inferSelect) {
-  const [studentCount, sessionCount, attendanceCount, activeSession] =
+  const [studentCount, sessionCount, attendanceCount, activeSession, lecturerRow] =
     await Promise.all([
       db
         .select({ value: count() })
@@ -157,9 +281,15 @@ async function getCourseSummary(course: typeof coursesTable.$inferSelect) {
           and(
             eq(sessionsTable.courseId, course.id),
             eq(sessionsTable.status, "active"),
+            gt(sessionsTable.endsAt, new Date()),
           ),
         )
         .orderBy(desc(sessionsTable.startsAt))
+        .limit(1),
+      db
+        .select({ name: usersTable.name })
+        .from(usersTable)
+        .where(eq(usersTable.id, course.lecturerId))
         .limit(1),
     ]);
 
@@ -178,7 +308,7 @@ async function getCourseSummary(course: typeof coursesTable.$inferSelect) {
     title: course.title,
     department: course.department,
     lecturerId: course.lecturerId,
-    lecturerName: lecturer.name,
+    lecturerName: lecturerRow[0]?.name ?? "Assigned lecturer",
     color: course.color,
     studentsEnrolled: totalStudents,
     attendanceRate: rate,
@@ -213,7 +343,7 @@ async function sessionResponse(session: typeof sessionsTable.$inferSelect) {
     courseTitle: course[0]?.title ?? "",
     room: session.room,
     status: currentSessionStatus(session),
-    token: session.token,
+    token: `${session.id}.${session.token}`,
     startsAt: parseDate(session.startsAt),
     endsAt: parseDate(session.endsAt),
     scanCount,
@@ -238,23 +368,86 @@ async function findStudent(studentId: string) {
 
 router.get("/me", async (_req, res) => {
   await ensureSeeded();
-  res.json(lecturer);
+  try {
+    const user = await getAppUser(_req);
+    if (!user) return errorResponse(res, 401, "Sign in is required");
+    return res.json(publicUser(user));
+  } catch (error) {
+    return errorResponse(
+      res,
+      403,
+      error instanceof Error ? error.message : "Unable to load your account",
+    );
+  }
 });
 
-router.get("/dashboard/summary", async (_req, res) => {
+router.get("/admin/users", async (req, res) => {
   await ensureSeeded();
-  const [studentCount, courseCount, todayRecords, allRecords, recent] =
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "admin")) {
+    return errorResponse(res, 403, "Administrator access is required");
+  }
+  const users = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.isDemo, false))
+    .orderBy(usersTable.name);
+  return res.json(users.map(publicUser));
+});
+
+router.patch("/admin/users/:userId/role", async (req, res) => {
+  await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "admin")) {
+    return errorResponse(res, 403, "Administrator access is required");
+  }
+  const { userId } = UpdateUserRoleParams.parse(req.params);
+  const { role } = UpdateUserRoleBody.parse(req.body);
+  if (userId === user.id && role !== "admin") {
+    return errorResponse(res, 400, "You cannot remove your own administrator role");
+  }
+  const [updated] = await db
+    .update(usersTable)
+    .set({ role })
+    .where(and(eq(usersTable.id, userId), eq(usersTable.isDemo, false)))
+    .returning();
+  if (!updated) return errorResponse(res, 404, "User not found");
+  return res.json(publicUser(updated));
+});
+
+router.get("/dashboard/summary", async (req, res) => {
+  await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "admin", "lecturer")) {
+    return errorResponse(res, 403, "Lecturer access is required to view the dashboard");
+  }
+  const allCourses = await db.select().from(coursesTable);
+  const courseRows = hasRole(user, "admin")
+    ? allCourses
+    : allCourses.filter((course) => course.lecturerId === user.id);
+  const courseIds = courseRows.map((course) => course.id);
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const [studentCount, todayRecords, allRecords, recent] =
     await Promise.all([
       db
         .select({ value: count() })
         .from(usersTable)
         .where(eq(usersTable.role, "student")),
-      db.select({ value: count() }).from(coursesTable),
       db
         .select({ value: count() })
         .from(attendanceTable)
-        .where(eq(attendanceTable.status, "present")),
-      db.select({ value: count() }).from(attendanceTable),
+        .where(
+          and(
+            eq(attendanceTable.status, "present"),
+            gte(attendanceTable.scannedAt, dayStart),
+            inArray(attendanceTable.courseId, courseIds),
+          ),
+        ),
+      db
+        .select({ value: count() })
+        .from(attendanceTable)
+        .where(inArray(attendanceTable.courseId, courseIds)),
       db
         .select({
           id: attendanceTable.id,
@@ -263,15 +456,15 @@ router.get("/dashboard/summary", async (_req, res) => {
           courseId: attendanceTable.courseId,
         })
         .from(attendanceTable)
+        .where(inArray(attendanceTable.courseId, courseIds))
         .orderBy(desc(attendanceTable.scannedAt))
         .limit(5),
     ]);
 
   const studentTotal = Number(studentCount[0]?.value ?? 0);
-  const courseTotal = Number(courseCount[0]?.value ?? 0);
+  const courseTotal = courseRows.length;
   const recordsToday = Number(todayRecords[0]?.value ?? 0);
   const allAttendance = Number(allRecords[0]?.value ?? 0);
-  const courseRows = await db.select().from(coursesTable);
   const recentActivity = await Promise.all(
     recent.map(async (item) => {
       const [student, course] = await Promise.all([
@@ -295,7 +488,7 @@ router.get("/dashboard/summary", async (_req, res) => {
     }),
   );
 
-  res.json({
+  return res.json({
     totalStudents: studentTotal,
     activeCourses: courseTotal,
     presentToday: recordsToday,
@@ -324,32 +517,41 @@ router.get("/dashboard/summary", async (_req, res) => {
 
 router.get("/courses", async (req, res) => {
   await ensureSeeded();
-  const { role } = ListCoursesQueryParams.parse(req.query);
+  const user = await getAppUser(req);
+  if (!user) return errorResponse(res, 401, "Sign in is required");
+  ListCoursesQueryParams.parse(req.query);
   const courses = await db.select().from(coursesTable);
-  const filtered =
-    role === "student"
+  const filtered = hasRole(user, "admin")
+    ? courses
+    : user.role === "student"
       ? courses
-      : courses.filter((course) => course.lecturerId === lecturer.id);
-  res.json(await Promise.all(filtered.map(getCourseSummary)));
+      : courses.filter((course) => course.lecturerId === user.id);
+  return res.json(await Promise.all(filtered.map(getCourseSummary)));
 });
 
 router.post("/courses", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "lecturer", "admin")) {
+    return errorResponse(res, 403, "Lecturer access is required to create a course");
+  }
   const body = CreateCourseBody.parse(req.body);
   const course = {
     id: `course-${randomUUID()}`,
     code: body.code.toUpperCase(),
     title: body.title,
     department: body.department,
-    lecturerId: lecturer.id,
+    lecturerId: user.id,
     color: body.color ?? "teal",
   };
   await db.insert(coursesTable).values(course);
-  res.status(201).json(await getCourseSummary(course));
+  return res.status(201).json(await getCourseSummary(course));
 });
 
 router.get("/courses/:courseId", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user) return errorResponse(res, 401, "Sign in is required");
   const { courseId } = GetCourseParams.parse(req.params);
   const course = await db
     .select()
@@ -357,11 +559,71 @@ router.get("/courses/:courseId", async (req, res) => {
     .where(eq(coursesTable.id, courseId))
     .limit(1);
   if (!course[0]) return errorResponse(res, 404, "Course not found");
+  if (!hasRole(user, "admin", "student") && course[0].lecturerId !== user.id) {
+    return errorResponse(res, 403, "You do not have access to this course");
+  }
   return res.json(await getCourseSummary(course[0]));
+});
+
+router.patch("/courses/:courseId", async (req, res) => {
+  await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "lecturer", "admin")) {
+    return errorResponse(res, 403, "Lecturer access is required to edit a course");
+  }
+  const { courseId } = UpdateCourseParams.parse(req.params);
+  const body = UpdateCourseBody.parse(req.body);
+  const course = await db
+    .select()
+    .from(coursesTable)
+    .where(eq(coursesTable.id, courseId))
+    .limit(1);
+  if (!course[0]) return errorResponse(res, 404, "Course not found");
+  if (!hasRole(user, "admin") && course[0].lecturerId !== user.id) {
+    return errorResponse(res, 403, "You do not own this course");
+  }
+  const [updated] = await db
+    .update(coursesTable)
+    .set(body)
+    .where(eq(coursesTable.id, courseId))
+    .returning();
+  return res.json(await getCourseSummary(updated));
+});
+
+router.delete("/courses/:courseId", async (req, res) => {
+  await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "lecturer", "admin")) {
+    return errorResponse(res, 403, "Lecturer access is required to delete a course");
+  }
+  const { courseId } = UpdateCourseParams.parse(req.params);
+  const course = await db
+    .select()
+    .from(coursesTable)
+    .where(eq(coursesTable.id, courseId))
+    .limit(1);
+  if (!course[0]) return errorResponse(res, 404, "Course not found");
+  if (!hasRole(user, "admin") && course[0].lecturerId !== user.id) {
+    return errorResponse(res, 403, "You do not own this course");
+  }
+  const courseSessions = await db
+    .select({ id: sessionsTable.id })
+    .from(sessionsTable)
+    .where(eq(sessionsTable.courseId, courseId))
+    .limit(1);
+  if (courseSessions[0]) {
+    return errorResponse(res, 409, "Courses with session history cannot be deleted");
+  }
+  await db.delete(coursesTable).where(eq(coursesTable.id, courseId));
+  return res.status(204).send();
 });
 
 router.post("/courses/:courseId/sessions", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "lecturer", "admin")) {
+    return errorResponse(res, 403, "Lecturer access is required to start a session");
+  }
   const { courseId } = CreateSessionParams.parse(req.params);
   const body = CreateSessionBody.parse(req.body);
   const course = await db
@@ -370,6 +632,9 @@ router.post("/courses/:courseId/sessions", async (req, res) => {
     .where(eq(coursesTable.id, courseId))
     .limit(1);
   if (!course[0]) return errorResponse(res, 404, "Course not found");
+  if (!hasRole(user, "admin") && course[0].lecturerId !== user.id) {
+    return errorResponse(res, 403, "You do not own this course");
+  }
 
   const startsAt = new Date();
   const endsAt = new Date(
@@ -390,6 +655,8 @@ router.post("/courses/:courseId/sessions", async (req, res) => {
 
 router.get("/sessions/:sessionId", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user) return errorResponse(res, 401, "Sign in is required");
   const { sessionId } = GetSessionParams.parse(req.params);
   const session = await db
     .select()
@@ -397,11 +664,20 @@ router.get("/sessions/:sessionId", async (req, res) => {
     .where(eq(sessionsTable.id, sessionId))
     .limit(1);
   if (!session[0]) return errorResponse(res, 404, "Session not found");
-  return res.json(await sessionResponse(session[0]));
+  const sessionCourse = await db.select().from(coursesTable).where(eq(coursesTable.id, session[0].courseId)).limit(1);
+  if (!hasRole(user, "admin", "student") && sessionCourse[0]?.lecturerId !== user.id) {
+    return errorResponse(res, 403, "You do not have access to this session");
+  }
+  const response = await sessionResponse(session[0]);
+  return res.json(user.role === "student" ? { ...response, token: "" } : response);
 });
 
 router.post("/sessions/:sessionId/end", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "lecturer", "admin")) {
+    return errorResponse(res, 403, "Lecturer access is required to end a session");
+  }
   const { sessionId } = EndSessionParams.parse(req.params);
   const session = await db
     .select()
@@ -409,6 +685,10 @@ router.post("/sessions/:sessionId/end", async (req, res) => {
     .where(eq(sessionsTable.id, sessionId))
     .limit(1);
   if (!session[0]) return errorResponse(res, 404, "Session not found");
+  const sessionCourse = await db.select().from(coursesTable).where(eq(coursesTable.id, session[0].courseId)).limit(1);
+  if (!hasRole(user, "admin") && sessionCourse[0]?.lecturerId !== user.id) {
+    return errorResponse(res, 403, "You do not own this session");
+  }
   const [updated] = await db
     .update(sessionsTable)
     .set({ status: "ended" })
@@ -419,7 +699,23 @@ router.post("/sessions/:sessionId/end", async (req, res) => {
 
 router.get("/sessions/:sessionId/attendance", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user) return errorResponse(res, 401, "Sign in is required");
   const { sessionId } = ListSessionAttendanceParams.parse(req.params);
+  const session = await db
+    .select()
+    .from(sessionsTable)
+    .where(eq(sessionsTable.id, sessionId))
+    .limit(1);
+  if (!session[0]) return errorResponse(res, 404, "Session not found");
+  const course = await db
+    .select({ lecturerId: coursesTable.lecturerId })
+    .from(coursesTable)
+    .where(eq(coursesTable.id, session[0].courseId))
+    .limit(1);
+  if (!course[0] || (!hasRole(user, "admin") && course[0].lecturerId !== user.id)) {
+    return errorResponse(res, 403, "Only the course lecturer or an administrator can view this list");
+  }
   const records = await db
     .select({
       id: attendanceTable.id,
@@ -437,7 +733,7 @@ router.get("/sessions/:sessionId/attendance", async (req, res) => {
     .innerJoin(coursesTable, eq(coursesTable.id, attendanceTable.courseId))
     .where(eq(attendanceTable.sessionId, sessionId))
     .orderBy(desc(attendanceTable.scannedAt));
-  res.json(
+  return res.json(
     records.map((record) => ({
       ...record,
       matricNumber: record.matricNumber ?? "",
@@ -449,6 +745,8 @@ router.get("/sessions/:sessionId/attendance", async (req, res) => {
 
 router.post("/sessions/:sessionId/scan", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user) return errorResponse(res, 401, "Sign in is required");
   const { sessionId } = ScanAttendanceParams.parse(req.params);
   const body = ScanAttendanceBody.parse(req.body);
   const session = await db
@@ -457,9 +755,20 @@ router.post("/sessions/:sessionId/scan", async (req, res) => {
     .where(eq(sessionsTable.id, sessionId))
     .limit(1);
   if (!session[0]) return errorResponse(res, 404, "Session not found");
+  const sessionCourse = await db.select().from(coursesTable).where(eq(coursesTable.id, session[0].courseId)).limit(1);
+  if (user.role === "student" && user.id !== body.studentId) {
+    return errorResponse(res, 403, "Students may only check in for their own account");
+  }
+  if (user.role === "lecturer" && sessionCourse[0]?.lecturerId !== user.id) {
+    return errorResponse(res, 403, "You do not own this session");
+  }
+  if (!hasRole(user, "admin", "lecturer", "student")) {
+    return errorResponse(res, 403, "This account cannot check in to attendance");
+  }
   const status = currentSessionStatus(session[0]);
   if (status !== "active") return errorResponse(res, 400, "This session is no longer active");
-  if (body.qrToken !== session[0].token) {
+  const qrPayload = `${session[0].id}.${session[0].token}`;
+  if (body.qrToken !== session[0].token && body.qrToken !== qrPayload) {
     return errorResponse(res, 400, "This QR code is not valid for the active session");
   }
   const student = await findStudent(body.studentId);
@@ -486,7 +795,13 @@ router.post("/sessions/:sessionId/scan", async (req, res) => {
       sessionId,
       status: "present",
     })
+    .onConflictDoNothing({
+      target: [attendanceTable.sessionId, attendanceTable.studentId],
+    })
     .returning();
+  if (!created) {
+    return errorResponse(res, 409, "Attendance already recorded for this session");
+  }
   const [course] = await db
     .select({ code: coursesTable.code })
     .from(coursesTable)
@@ -507,11 +822,25 @@ router.post("/sessions/:sessionId/scan", async (req, res) => {
 
 router.get("/reports/attendance", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user || !hasRole(user, "admin", "lecturer")) {
+    return errorResponse(res, 403, "Lecturer access is required to view reports");
+  }
   const { courseId } = GetAttendanceReportQueryParams.parse(req.query);
-  const courses = await db
-    .select()
-    .from(coursesTable)
-    .where(courseId ? eq(coursesTable.id, courseId) : undefined);
+  const allCourses = await db.select().from(coursesTable);
+  const visibleCourses = allCourses.filter(
+    (course) => hasRole(user, "admin") || course.lecturerId === user.id,
+  );
+  if (
+    courseId &&
+    allCourses.some((course) => course.id === courseId) &&
+    !visibleCourses.some((course) => course.id === courseId)
+  ) {
+    return errorResponse(res, 403, "You do not have access to this course report");
+  }
+  const courses = visibleCourses.filter(
+    (course) => !courseId || course.id === courseId,
+  );
   const report = await Promise.all(
     courses.map(async (course) => {
       const [studentsCount, sessionsCount, attendanceCount] = await Promise.all([
@@ -545,12 +874,17 @@ router.get("/reports/attendance", async (req, res) => {
       };
     }),
   );
-  res.json(report);
+  return res.json(report);
 });
 
 router.get("/students/:studentId/attendance", async (req, res) => {
   await ensureSeeded();
+  const user = await getAppUser(req);
+  if (!user) return errorResponse(res, 401, "Sign in is required");
   const { studentId } = GetStudentAttendanceParams.parse(req.params);
+  if (!hasRole(user, "admin") && user.id !== studentId) {
+    return errorResponse(res, 403, "You may only view your own attendance history");
+  }
   const records = await db
     .select({
       id: attendanceTable.id,
@@ -568,7 +902,7 @@ router.get("/students/:studentId/attendance", async (req, res) => {
     .innerJoin(coursesTable, eq(coursesTable.id, attendanceTable.courseId))
     .where(eq(attendanceTable.studentId, studentId))
     .orderBy(desc(attendanceTable.scannedAt));
-  res.json(
+  return res.json(
     records.map((record) => ({
       ...record,
       matricNumber: record.matricNumber ?? "",

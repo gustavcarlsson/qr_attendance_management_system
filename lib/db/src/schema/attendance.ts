@@ -1,4 +1,5 @@
 import {
+  boolean,
   index,
   pgTable,
   text,
@@ -18,6 +19,8 @@ export const usersTable = pgTable(
     initials: text("initials").notNull(),
     matricNumber: text("matric_number"),
     department: text("department").notNull(),
+    clerkUserId: text("clerk_user_id").unique(),
+    isDemo: boolean("is_demo").notNull().default(false),
   },
   (table) => [index("attendance_users_role_idx").on(table.role)],
 );
