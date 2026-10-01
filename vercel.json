@@ -6,11 +6,6 @@
       "framework": "express",
       "entrypoint": "src/app.ts"
     },
-    "mockup-sandbox": {
-      "root": "artifacts/mockup-sandbox",
-      "framework": "vite",
-      "outputDirectory": "dist"
-    },
     "qr-attendance": {
       "root": "artifacts/qr-attendance",
       "framework": "vite",
